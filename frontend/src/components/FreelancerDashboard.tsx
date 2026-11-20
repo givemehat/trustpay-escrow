@@ -12,6 +12,7 @@ import { MilestoneSubmitModal } from './MilestoneSubmitModal';
 import { ProjectChatModal } from './ProjectChatModal';
 import { ProjectCardSkeletonList, ProposalSkeletonList } from '@/components/skeletons';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 
 export function FreelancerDashboard() {
   const router = useRouter();
@@ -424,26 +425,12 @@ export function FreelancerDashboard() {
               </div>
 
               {/* Search & Category Filter */}
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="Search projects..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full sm:w-auto px-3 py-1.5 bg-[#232326] border border-[#333338] rounded-xl text-white text-xs placeholder-[#71717a] focus:outline-none focus:border-indigo-500"
-                />
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="w-full sm:w-auto px-3 py-1.5 bg-[#232326] border border-[#333338] rounded-xl text-white text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
-                >
-                  <option value="All">All Categories</option>
-                  <option value="Development">Development</option>
-                  <option value="Design">Design</option>
-                  <option value="Writing">Writing</option>
-                  <option value="Marketing">Marketing</option>
-                </select>
-              </div>
+              <ProjectFilterBar
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                selectedCategory={selectedCategory}
+                onCategoryChange={setSelectedCategory}
+              />
             </div>
 
             {/* Project List */}
