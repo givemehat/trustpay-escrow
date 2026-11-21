@@ -669,3 +669,81 @@ export async function autoReleaseMilestoneOnChain(params: {
   });
 }
 
+export type FeeSpeedTier = 'standard' | 'fast' | 'urgent';
+
+export interface FeeTierDetails {
+  feeStroops: number;
+  multiplier: number;
+  estimatedTimeSec: number;
+}
+
+export interface NetworkFeeStats {
+  baseFeeStroops: number;
+  surgeMultiplier: number;
+  isSurgeActive: boolean;
+  ledgerCapacityUsage: number;
+  tiers: {
+    standard: FeeTierDetails;
+    fast: FeeTierDetails;
+    urgent: FeeTierDetails;
+  };
+}
+
+export function calculateFeeTiers(baseFeeStroops: number, surgeMultiplier: number = 1.0): NetworkFeeStats['tiers'] {
+  const effectiveBase = Math.max(100, Math.round(baseFeeStroops * surgeMultiplier));
+  return {
+    standard: {
+      feeStroops: effectiveBase,
+      multiplier: 1.0,
+      estimatedTimeSec: 3,
+    },
+    fast: {
+      feeStroops: Math.round(effectiveBase * 1.5),
+      multiplier: 1.5,
+      estimatedTimeSec: 2,
+    },
+    urgent: {
+      feeStroops: Math.round(effectiveBase * 2.0),
+      multiplier: 2.0,
+      estimatedTimeSec: 1,
+    },
+  };
+}
+
+export async function fetchStellarFeeStats(): Promise<NetworkFeeStats> {
+  const fallbackBase = 100;
+  try {
+    const res = await fetch(`${HORIZON_URL}/fee_stats`);
+    if (!res.ok) {
+      return {
+        baseFeeStroops: fallbackBase,
+        surgeMultiplier: 1.0,
+        isSurgeActive: false,
+        ledgerCapacityUsage: 0.1,
+        tiers: calculateFeeTiers(fallbackBase),
+      };
+    }
+    const data = await res.json();
+    const modeFee = Number(data?.fee_charged?.mode || data?.min_accepted_fee || fallbackBase);
+    const capacityUsage = Number(data?.ledger_capacity_usage || 0);
+    const isSurge = capacityUsage > 0.85;
+    const surgeMultiplier = isSurge ? 1.3 : 1.0;
+    return {
+      baseFeeStroops: modeFee,
+      surgeMultiplier,
+      isSurgeActive: isSurge,
+      ledgerCapacityUsage: capacityUsage,
+      tiers: calculateFeeTiers(modeFee, surgeMultiplier),
+    };
+  } catch {
+    return {
+      baseFeeStroops: fallbackBase,
+      surgeMultiplier: 1.0,
+      isSurgeActive: false,
+      ledgerCapacityUsage: 0.1,
+      tiers: calculateFeeTiers(fallbackBase),
+    };
+  }
+}
+
+

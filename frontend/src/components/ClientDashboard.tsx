@@ -17,6 +17,7 @@ import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { ProjectAuditLog } from '@/components/ProjectAuditLog';
 import { CalendarExportButton } from '@/components/CalendarExportButton';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { GasFeeEstimatorWidget } from '@/components/GasFeeEstimatorWidget';
 import {
   createProjectOnChain,
   lockEscrowOnChain,
@@ -79,6 +80,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
   const [formYieldEnabled, setFormYieldEnabled] = useState(false);
   const [formFreelancerAddress, setFormFreelancerAddress] = useState('');
   const [formLockImmediately, setFormLockImmediately] = useState(false);
+  const [configuredFeeStroops, setConfiguredFeeStroops] = useState<number>(100);
   const [fundingTxMessage, setFundingTxMessage] = useState('');
   const walletBalance = useTokenBalance(address, formToken);
   const balanceShortfall = getBalanceShortfall(walletBalance.balance, formBudget === '' ? 0 : formBudget);
@@ -1304,6 +1306,13 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                     ))
                   )}
                 </div>
+              </div>
+
+              {/* Network Gas & Soroban Fee Estimator */}
+              <div className="pt-2">
+                <GasFeeEstimatorWidget
+                  onFeeSelected={(fee) => setConfiguredFeeStroops(fee)}
+                />
               </div>
 
               {/* Save Project Button */}
