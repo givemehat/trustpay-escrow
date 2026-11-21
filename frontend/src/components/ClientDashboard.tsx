@@ -17,6 +17,7 @@ import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { ProjectAuditLog } from '@/components/ProjectAuditLog';
 import { CalendarExportButton } from '@/components/CalendarExportButton';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { StarredFreelancersList } from '@/components/StarredFreelancersList';
 import {
   createProjectOnChain,
   lockEscrowOnChain,
@@ -25,14 +26,16 @@ import {
   DEFAULT_ESCROW_CONTRACT_ID,
 } from '@/lib/soroban';
 
+export type ClientDashboardTab = 'projects' | 'create' | 'applicants' | 'saved';
+
 export interface ClientDashboardProps {
-  defaultTab?: 'projects' | 'create' | 'applicants';
+  defaultTab?: ClientDashboardTab;
 }
 
 export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProps) {
   const router = useRouter();
   const { address } = useWalletStore();
-  const [activeTab, setActiveTab] = useState<'projects' | 'create' | 'applicants'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<ClientDashboardTab>(defaultTab);
   const [loading, setLoading] = useState(true);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; name?: string } | null>(null);
 
@@ -602,6 +605,16 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
               }`}
             >
               Applicants ({selectedProjectForApplicants?.applicants?.length || 0})
+            </button>
+            <button
+              onClick={() => setActiveTab('saved')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                activeTab === 'saved'
+                  ? 'bg-[#27272a] text-white shadow-sm'
+                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#27272a]/50'
+              }`}
+            >
+              Saved Contractors
             </button>
           </div>
         </div>
@@ -1393,6 +1406,17 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
               )}
             </div>
           </div>
+        )}
+
+        {/* VIEW 4: SAVED CONTRACTORS */}
+        {activeTab === 'saved' && (
+          <StarredFreelancersList
+            onInviteToProject={(contractorAddr) => {
+              setFormFreelancerAddress(contractorAddr);
+              setActiveTab('create');
+              toast.info(`Pre-filling contractor address for new escrow project`);
+            }}
+          />
         )}
 
       </div>

@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { toast } from 'sonner';
 import { CryptoId } from '@/components/ui/CryptoId';
+import { StarButton } from '@/components/StarredFreelancersList';
 
 export interface ApplicantCardData {
   id: string;
@@ -83,6 +84,11 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onOpenChat, isProce
             >
               {copied ? '✓' : '📋'}
             </button>
+            <StarButton
+              address={walletAddr}
+              name={applicant.name}
+              portfolioUrl={portfolioUrl}
+            />
           </div>
         </div>
 
