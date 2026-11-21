@@ -14,6 +14,7 @@ import {
 import type { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
 import { MarkdownDeliverableEditor } from './MarkdownDeliverableEditor';
+import { DeliverableFolderTree } from './DeliverableFolderTree';
 
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -478,6 +479,15 @@ export function MilestoneSubmitModal({
                   </li>
                 ))}
               </ul>
+            )}
+
+            {files.length > 0 && (
+              <div className="mt-3">
+                <DeliverableFolderTree
+                  files={files.map((f) => ({ path: f.name, size: f.size, url: f.previewUrl }))}
+                  title="Deliverable Files Hierarchy"
+                />
+              </div>
             )}
           </section>
 
