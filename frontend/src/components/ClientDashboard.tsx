@@ -13,11 +13,12 @@ import { ProjectChatModal } from './ProjectChatModal';
 import { ProjectCardSkeletonList } from '@/components/skeletons';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import { useTokenBalance, getBalanceShortfall } from '@/hooks/useCreateProjectForm';
+import { usePersistentTab } from '@/hooks/usePersistentTab';
 import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { ProjectAuditLog } from '@/components/ProjectAuditLog';
 import { CalendarExportButton } from '@/components/CalendarExportButton';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
-import { StarredFreelancersList } from '@/components/StarredFreelancersList';
+import { GasFeeEstimatorWidget } from '@/components/GasFeeEstimatorWidget';
 import {
   createProjectOnChain,
   lockEscrowOnChain,
@@ -35,7 +36,12 @@ export interface ClientDashboardProps {
 export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProps) {
   const router = useRouter();
   const { address } = useWalletStore();
-  const [activeTab, setActiveTab] = useState<ClientDashboardTab>(defaultTab);
+  const [activeTab, setActiveTab] = usePersistentTab<'projects' | 'create' | 'applicants'>({
+    key: 'client_active_tab',
+    defaultTab,
+    allowedTabs: ['projects', 'create', 'applicants'] as const,
+    walletAddress: address,
+  });
   const [loading, setLoading] = useState(true);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; name?: string } | null>(null);
 
@@ -82,6 +88,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
   const [formYieldEnabled, setFormYieldEnabled] = useState(false);
   const [formFreelancerAddress, setFormFreelancerAddress] = useState('');
   const [formLockImmediately, setFormLockImmediately] = useState(false);
+  const [configuredFeeStroops, setConfiguredFeeStroops] = useState<number>(100);
   const [fundingTxMessage, setFundingTxMessage] = useState('');
   const walletBalance = useTokenBalance(address, formToken);
   const balanceShortfall = getBalanceShortfall(walletBalance.balance, formBudget === '' ? 0 : formBudget);
@@ -1317,6 +1324,13 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                     ))
                   )}
                 </div>
+              </div>
+
+              {/* Network Gas & Soroban Fee Estimator */}
+              <div className="pt-2">
+                <GasFeeEstimatorWidget
+                  onFeeSelected={(fee) => setConfiguredFeeStroops(fee)}
+                />
               </div>
 
               {/* Save Project Button */}
