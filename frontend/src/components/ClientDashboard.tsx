@@ -36,10 +36,10 @@ export interface ClientDashboardProps {
 export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProps) {
   const router = useRouter();
   const { address } = useWalletStore();
-  const [activeTab, setActiveTab] = usePersistentTab<'projects' | 'create' | 'applicants'>({
+  const [activeTab, setActiveTab] = usePersistentTab<ClientDashboardTab>({
     key: 'client_active_tab',
     defaultTab,
-    allowedTabs: ['projects', 'create', 'applicants'] as const,
+    allowedTabs: ['projects', 'create', 'applicants', 'saved'] as const,
     walletAddress: address,
   });
   const [loading, setLoading] = useState(true);
