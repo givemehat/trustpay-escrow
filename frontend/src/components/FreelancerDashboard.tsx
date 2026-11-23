@@ -15,6 +15,7 @@ import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
 import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab';
+import { triggerCelebrationConfetti } from '@/lib/confetti';
 
 export function FreelancerDashboard() {
   const router = useRouter();
