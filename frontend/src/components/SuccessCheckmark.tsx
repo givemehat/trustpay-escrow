@@ -2,8 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { CryptoId } from '@/components/ui/CryptoId';
-import { useFocusTrap } from '@/hooks/useFocusTrap';
-import { announcePolite } from '@/components/a11y/LiveAnnouncer';
+import { triggerCelebrationConfetti } from '@/lib/confetti';
 
 export interface SuccessCheckmarkProps {
   isOpen: boolean;
@@ -88,6 +87,7 @@ export function SuccessCheckmark({
       if (playSound && !audioPlayedRef.current) {
         audioPlayedRef.current = true;
         playCelebrationChime();
+        triggerCelebrationConfetti();
       }
 
       let timer: NodeJS.Timeout | null = null;

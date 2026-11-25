@@ -34,6 +34,7 @@ import {
   DEFAULT_ESCROW_CONTRACT_ID,
   setSorobanBaseFee,
 } from '@/lib/soroban';
+import { triggerCelebrationConfetti } from '@/lib/confetti';
 
 export interface ClientDashboardProps {
   defaultTab?: 'projects' | 'create' | 'applicants' | 'saved';
@@ -389,6 +390,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
         }
 
         toast.success('Proposal accepted & project funded on-chain!');
+        triggerCelebrationConfetti();
         setProjects((prev) =>
           prev.map((proj) => ({
             ...proj,
@@ -567,6 +569,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
         contractId = DEFAULT_ESCROW_CONTRACT_ID;
         celebrateEscrow();
         toast.success(`Escrow project #${onChainProjectId} locked on Stellar!`);
+        triggerCelebrationConfetti();
       }
 
       const finalCategory =

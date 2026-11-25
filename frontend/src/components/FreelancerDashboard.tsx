@@ -20,6 +20,7 @@ import { ShareMilestoneButton } from '@/components/ShareableMilestoneCard';
 import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab';
+import { triggerCelebrationConfetti } from '@/lib/confetti';
 
 export function FreelancerDashboard() {
   const router = useRouter();
@@ -398,6 +399,7 @@ export function FreelancerDashboard() {
         setProposals((prev) => [newProp, ...prev]);
 
         toast.success('Application submitted successfully!');
+        triggerCelebrationConfetti();
         setSelectedProject(null);
         setProposalCoverNote('');
         setProposalPortfolioUrl('');

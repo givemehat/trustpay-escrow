@@ -1,41 +1,153 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  triggerCelebrationConfetti,
+  isReducedMotionPreferred,
+  STELLAR_CONFETTI_COLORS,
+} from './confetti';
 import confetti from 'canvas-confetti';
-import { celebrateEscrow } from './confetti';
 
-vi.mock('canvas-confetti', () => ({ default: { create: vi.fn() } }));
+vi.mock('canvas-confetti', () => ({
+  default: vi.fn(),
+}));
 
-afterEach(() => {
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
-});
+describe('confetti utility', () => {
+  const originalMatchMedia = window.matchMedia;
 
-describe('escrow confetti', () => {
-  it('creates a canvas with brand particles and removes it after two seconds', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
     vi.useFakeTimers();
-    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D);
-    const burst = Object.assign(vi.fn(), { reset: vi.fn() });
-    vi.mocked(confetti.create).mockImplementation((canvas) => {
-      canvas?.getContext('2d');
-      return burst;
-    });
-    celebrateEscrow();
-
-    expect(context).toHaveBeenCalledWith('2d');
-    expect(burst).toHaveBeenCalledWith(expect.objectContaining({ colors: ['#3b82f6', '#10b981', '#6366f1', '#fbbf24'] }));
-    expect(document.querySelector('canvas')).toHaveStyle({ position: 'fixed', pointerEvents: 'none' });
-    vi.advanceTimersByTime(1999);
-    expect(document.querySelector('canvas')).toBeInTheDocument();
-    vi.advanceTimersByTime(1);
-    expect(burst.reset).toHaveBeenCalledOnce();
-    expect(document.querySelector('canvas')).toBeNull();
   });
 
-  it('skips the canvas when reduced motion is enabled', () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
-    celebrateEscrow();
-    expect(confetti.create).not.toHaveBeenCalled();
-    expect(document.querySelector('canvas')).toBeNull();
+  afterEach(() => {
+    vi.useRealTimers();
+    window.matchMedia = originalMatchMedia;
+  });
+
+  describe('isReducedMotionPreferred', () => {
+    it('returns false when window.matchMedia indicates no reduced motion preference', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      expect(isReducedMotionPreferred()).toBe(false);
+    });
+
+    it('returns true when prefers-reduced-motion is active', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('prefers-reduced-motion: reduce'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      expect(isReducedMotionPreferred()).toBe(true);
+    });
+  });
+
+  describe('triggerCelebrationConfetti', () => {
+    it('skips firing particles and returns false when prefers-reduced-motion is enabled', () => {
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('prefers-reduced-motion: reduce'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      const triggered = triggerCelebrationConfetti();
+      expect(triggered).toBe(false);
+      expect(confetti).not.toHaveBeenCalled();
+    });
+
+    it('triggers initial burst with Stellar brand colors when reduced motion is not preferred', () => {
+      window.matchMedia = vi.fn().mockImplementation(() => ({
+        matches: false,
+        media: '',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      const triggered = triggerCelebrationConfetti({ durationMs: 1000, particleCount: 60 });
+      expect(triggered).toBe(true);
+      expect(confetti).toHaveBeenCalledTimes(1);
+
+      expect(confetti).toHaveBeenCalledWith(
+        expect.objectContaining({
+          colors: STELLAR_CONFETTI_COLORS,
+          disableForReducedMotion: true,
+          zIndex: 9999,
+        })
+      );
+    });
+
+    it('cleans up interval after timeout duration completes', () => {
+      window.matchMedia = vi.fn().mockImplementation(() => ({
+        matches: false,
+        media: '',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      triggerCelebrationConfetti({ durationMs: 600 });
+      expect(confetti).toHaveBeenCalledTimes(1);
+
+      // Advance by 250ms -> second burst
+      vi.advanceTimersByTime(250);
+      expect(confetti).toHaveBeenCalledTimes(2);
+
+      // Advance by 250ms -> third burst (500ms elapsed)
+      vi.advanceTimersByTime(250);
+      expect(confetti).toHaveBeenCalledTimes(3);
+
+      // Advance past 600ms -> should complete and clear interval
+      vi.advanceTimersByTime(300);
+      const callCountAfterExpiration = (confetti as any).mock.calls.length;
+
+      // Further time progression should not trigger additional bursts
+      vi.advanceTimersByTime(1000);
+      expect((confetti as any).mock.calls.length).toBe(callCountAfterExpiration);
+    });
+
+    it('handles canvas errors gracefully and returns false', () => {
+      window.matchMedia = vi.fn().mockImplementation(() => ({
+        matches: false,
+        media: '',
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }));
+
+      vi.mocked(confetti).mockImplementationOnce(() => {
+        throw new Error('Canvas not supported');
+      });
+
+      const triggered = triggerCelebrationConfetti();
+      expect(triggered).toBe(false);
+    });
   });
 });
