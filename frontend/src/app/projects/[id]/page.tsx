@@ -87,13 +87,81 @@ export default function ProjectDetailsPage() {
   const [resolveClientAmount, setResolveClientAmount] = useState<number | ''>('');
   const [resolveFreelancerAmount, setResolveFreelancerAmount] = useState<number | ''>('');
 
-  // Review modal state (#312)
-  const [showReviewModal, setShowReviewModal] = useState(false);
-  const [reviewContext, setReviewContext] = useState<{
-    revieweeAddress: string;
-    revieweeRole: 'client' | 'freelancer';
-    reviewerRole: 'client' | 'freelancer';
-  } | null>(null);
+  // Drag-and-drop reorder state for milestone cards (#314)
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduceMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduceMotion(e.matches);
+    mq.addEventListener?.('change', handler);
+    return () => mq.removeEventListener?.('change', handler);
+  }, []);
+
+  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
+    setDraggedIndex(index);
+    e.currentTarget.style.opacity = reduceMotion ? '1' : '0.4';
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === index) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverIndex(null);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>, targetIndex: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === targetIndex) return;
+    e.preventDefault();
+    const fromIndex = draggedIndex;
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+
+    // Reorder locally first for instant feedback
+    const milestones = [...(project.milestones || [])].sort((a, b) => a.milestone_index - b.milestone_index);
+    const [removed] = milestones.splice(fromIndex, 1);
+    milestones.splice(targetIndex, 0, removed);
+    const reordered = milestones.map((m, i) => ({ ...m, milestone_index: i }));
+    setProject((prev) => prev ? { ...prev, milestones: reordered } : prev);
+
+    // Persist to backend
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await Promise.all(
+        reordered.map((m, i) =>
+          authFetch(`${apiUrl}/api/milestones/${m.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ milestone_index: i }),
+          })
+        )
+      );
+      toast.success('Milestone order updated');
+    } catch (err: any) {
+      toast.error(`Failed to persist order: ${err.message || err}`);
+      await fetchProject(); // Revert on error
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+    e.currentTarget.style.opacity = '1';
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  // Only allow reorder on draft projects for the client
+  const editableMilestones = project?.status === 'draft' && isClient;
 
   const [showFundEscrowModal, setShowFundEscrowModal] = useState(false);
   const [fundFreelancerAddress, setFundFreelancerAddress] = useState('');
@@ -1138,14 +1206,51 @@ export default function ProjectDetailsPage() {
               <p className="text-slate-300 font-medium">No milestones created for this project.</p>
             </div>
           ) : (
-            <div className="grid gap-4">
+            <div className="grid gap-4 relative">
               {project.milestones
                 .sort((a, b) => a.milestone_index - b.milestone_index)
                 .map((m, idx) => (
-                  <div
-                    key={m.id || idx}
-                    className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6"
-                  >
+                  <>
+                    {/* Drop indicator line above card when dragging over */}
+                    {editableMilestones && dragOverIndex === idx && draggedIndex !== null && draggedIndex !== idx && (
+                      <div
+                        className="absolute left-0 right-0 h-2 -top-1 pointer-events-none"
+                        style={{ zIndex: 50 }}
+                        aria-hidden="true"
+                      >
+                        <div
+                          className="h-full w-full rounded-t-xl"
+                          style={{
+                            background: 'linear-gradient(90deg, transparent, #3b82f6, transparent)',
+                            boxShadow: '0 0 12px 2px #3b82f6, 0 0 24px 4px #3b82f640',
+                            opacity: reduceMotion ? 1 : 0.9,
+                            transform: reduceMotion ? 'none' : 'scaleY(1.5)',
+                            transition: reduceMotion ? 'none' : 'transform 120ms ease-out, opacity 120ms ease-out',
+                          }}
+                        />
+                      </div>
+                    )}
+                    {/* Milestone card with drag-and-drop */}
+                    <div
+                      key={m.id || idx}
+                      draggable={editableMilestones}
+                      onDragStart={(e) => handleDragStart(e, idx)}
+                      onDragOver={(e) => handleDragOver(e, idx)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, idx)}
+                      onDragEnd={handleDragEnd}
+                      className={`bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative ${
+                        editableMilestones && draggedIndex === idx && !reduceMotion
+                          ? 'scale-[1.02] shadow-[0_0_24px_#3b82f680] ring-1 ring-blue-500/40 z-10'
+                          : ''
+                      }`}
+                      style={{
+                        transition: editableMilestones && !reduceMotion
+                          ? 'transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out'
+                          : 'none',
+                        opacity: editableMilestones && draggedIndex !== null && draggedIndex !== idx && !reduceMotion ? 0.6 : 1,
+                      }}
+                    >
                     <div className="space-y-2 flex-1">
                       <div className="flex items-center gap-3 flex-wrap">
                         <span className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold flex items-center justify-center">
@@ -1328,7 +1433,7 @@ export default function ProjectDetailsPage() {
                       </div>
                     </div>
                   </div>
-                ))}
+                </>)}
             </div>
           )}
         </div>
