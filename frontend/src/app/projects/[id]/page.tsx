@@ -1,8 +1,9 @@
 'use client';
 
 import { celebrateEscrow } from '@/lib/confetti';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { DeliverableChecksums } from '@/components/FileChecksumBadge';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
+import { announcePolite } from '@/components/a11y/LiveAnnouncer';
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -22,7 +23,6 @@ import { useWalletStore } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
 import { CryptoId } from '@/components/ui/CryptoId';
 
-import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import {
   createProjectOnChain,
@@ -86,27 +86,13 @@ export default function ProjectDetailsPage() {
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showMutualCancelModal, setShowMutualCancelModal] = useState(false);
 
-  // Escape mirrors each modal's own Cancel button.
-  useEscapeKey(() => {
-    setActiveDeliverableModal(null);
-    setDeliverableHash('');
-    setDeliverableUrl('');
-    setDeliverableNotes('');
-  }, Boolean(activeDeliverableModal));
-  useEscapeKey(() => {
-    setActiveRevisionModal(null);
-    setRevisionNote('');
-  }, Boolean(activeRevisionModal));
-  useEscapeKey(() => setActiveApproveModal(null), Boolean(activeApproveModal));
-  useEscapeKey(() => setShowFundEscrowModal(false), showFundEscrowModal);
-  useEscapeKey(() => setActiveDisputeModal(false), activeDisputeModal);
-  useEscapeKey(() => setActiveResolveModal(false), activeResolveModal);
-  // The overlay stays on the stack while a transaction runs, so Escape cannot close the modal under it.
-  useEscapeKey(() => {
-    if (txState.stage === 'success' || txState.stage === 'error') {
-      setTxState((prev) => ({ ...prev, isOpen: false }));
+  useEffect(() => {
+    if (!txState.isOpen) return;
+    const statusText = txState.error || txState.message;
+    if (statusText) {
+      announcePolite(statusText);
     }
-  }, txState.isOpen);
+  }, [txState.isOpen, txState.stage, txState.message, txState.error]);
 
   const computeDeliverableHash = async (input: string): Promise<string> => {
     const trimmed = input.trim();
@@ -157,14 +143,18 @@ export default function ProjectDetailsPage() {
   }, [projectId]);
 
   if (loading) {
-    return <ProjectDetailSkeleton />;
+    return (
+      <main id="main-content" tabIndex={-1}>
+        <ProjectDetailSkeleton />
+      </main>
+    );
   }
 
   if (!project) {
     return (
-      <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
-        <div className="w-16 h-16 bg-red-500/10 text-red-400 rounded-2xl flex items-center justify-center mb-4 border border-red-500/20">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
+      <main id="main-content" tabIndex={-1} className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 bg-red-500/10 text-red-400 rounded-2xl flex items-center justify-center mb-4 border border-red-500/20" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
           </svg>
         </div>
@@ -175,7 +165,7 @@ export default function ProjectDetailsPage() {
         <Button onClick={() => router.push('/')} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl">
           Return Home
         </Button>
-      </div>
+      </main>
     );
   }
 
@@ -671,7 +661,7 @@ export default function ProjectDetailsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-24">
+    <main id="main-content" tabIndex={-1} className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-24">
       {/* Top Banner Gradient */}
       <div className="h-64 bg-gradient-to-r from-indigo-900 via-slate-900 to-purple-950 relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-500/20 via-transparent to-transparent"></div>
@@ -1140,9 +1130,20 @@ export default function ProjectDetailsPage() {
       </div>
 
       {/* MODAL 1: Freelancer Submit Deliverable Modal */}
-      {activeDeliverableModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(activeDeliverableModal)}
+        onClose={() => {
+          setActiveDeliverableModal(null);
+          setDeliverableHash('');
+          setDeliverableUrl('');
+          setDeliverableNotes('');
+        }}
+        ariaLabel={activeDeliverableModal ? `Submit deliverable for ${activeDeliverableModal.title}` : 'Submit deliverable'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        {activeDeliverableModal && (
+          <>
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
                 Milestone #{activeDeliverableModal.milestone_index + 1} Deliverable
@@ -1155,8 +1156,8 @@ export default function ProjectDetailsPage() {
 
             <div className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5 flex justify-between items-center">
-                  <span>Cryptographic Deliverable Hash (IPFS CID or SHA-256)</span>
+                <div className="text-slate-300 font-semibold mb-1.5 flex justify-between items-center">
+                  <label htmlFor="deliverable-hash-input">Cryptographic Deliverable Hash (IPFS CID or SHA-256)</label>
                   <button
                     type="button"
                     onClick={async () => {
@@ -1169,8 +1170,9 @@ export default function ProjectDetailsPage() {
                   >
                     Auto-calculate SHA-256
                   </button>
-                </label>
+                </div>
                 <input
+                  id="deliverable-hash-input"
                   type="text"
                   value={deliverableHash}
                   onChange={(e) => setDeliverableHash(e.target.value)}
@@ -1180,8 +1182,9 @@ export default function ProjectDetailsPage() {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Deliverable URL / Repository PR / IPFS Gateway</label>
+                <label htmlFor="deliverable-url-input" className="block text-slate-300 font-semibold mb-1.5">Deliverable URL / Repository PR / IPFS Gateway</label>
                 <input
+                  id="deliverable-url-input"
                   type="text"
                   value={deliverableUrl}
                   onChange={(e) => setDeliverableUrl(e.target.value)}
@@ -1191,8 +1194,9 @@ export default function ProjectDetailsPage() {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Submission Notes & Completion Summary</label>
+                <label htmlFor="deliverable-notes-input" className="block text-slate-300 font-semibold mb-1.5">Submission Notes & Completion Summary</label>
                 <textarea
+                  id="deliverable-notes-input"
                   rows={3}
                   value={deliverableNotes}
                   onChange={(e) => setDeliverableNotes(e.target.value)}
@@ -1222,14 +1226,23 @@ export default function ProjectDetailsPage() {
                 Sign & Submit via Freighter ↗
               </Button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* MODAL 1b: Client Request Revision Modal */}
-      {activeRevisionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(activeRevisionModal)}
+        onClose={() => {
+          setActiveRevisionModal(null);
+          setRevisionNote('');
+        }}
+        ariaLabel={activeRevisionModal ? `Request revision for ${activeRevisionModal.title}` : 'Request revision'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        {activeRevisionModal && (
+          <>
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
                 Formal Revision Request
@@ -1246,8 +1259,9 @@ export default function ProjectDetailsPage() {
 
             <div className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Revision Feedback & Required Adjustments *</label>
+                <label htmlFor="revision-feedback-input" className="block text-slate-300 font-semibold mb-1.5">Revision Feedback & Required Adjustments *</label>
                 <textarea
+                  id="revision-feedback-input"
                   rows={4}
                   value={revisionNote}
                   onChange={(e) => setRevisionNote(e.target.value)}
@@ -1275,14 +1289,20 @@ export default function ProjectDetailsPage() {
                 Sign & Request Revision 🔄
               </Button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* MODAL 2: Client Approve Milestone Modal */}
-      {activeApproveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(activeApproveModal)}
+        onClose={() => setActiveApproveModal(null)}
+        ariaLabel={activeApproveModal ? `Approve milestone ${activeApproveModal.title}` : 'Approve milestone'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        {activeApproveModal && (
+          <>
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Release Milestone Payment</span>
               <h3 className="text-xl font-bold text-white mt-1">{activeApproveModal.title}</h3>
@@ -1328,227 +1348,247 @@ export default function ProjectDetailsPage() {
                 Confirm On-Chain Release ↗
               </Button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* MODAL 3: Fund Escrow on Soroban Modal */}
-      {showFundEscrowModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Soroban Smart Contract Funding</span>
-              <h3 className="text-xl font-bold text-white mt-1">Lock Escrow Deposit</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Deposit {project.budget} {tokenSymbol} into the TrustPay Soroban escrow contract on Stellar Testnet.
-              </p>
+      <AccessibleModal
+        isOpen={showFundEscrowModal}
+        onClose={() => setShowFundEscrowModal(false)}
+        ariaLabel="Lock Escrow Deposit"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        <div>
+          <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Soroban Smart Contract Funding</span>
+          <h3 className="text-xl font-bold text-white mt-1">Lock Escrow Deposit</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Deposit {project.budget} {tokenSymbol} into the TrustPay Soroban escrow contract on Stellar Testnet.
+          </p>
+        </div>
+
+        <div className="space-y-4 text-xs">
+          <div>
+            <label htmlFor="fund-freelancer-input" className="block text-slate-300 font-semibold mb-1.5">Designated Freelancer Stellar Address (G...)</label>
+            <input
+              id="fund-freelancer-input"
+              type="text"
+              value={fundFreelancerAddress}
+              onChange={(e) => setFundFreelancerAddress(e.target.value)}
+              placeholder="G..."
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 font-mono tracking-tight text-sm focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-slate-400">
+            <div className="flex justify-between">
+              <span>Contract Target:</span>
+              <CryptoId
+                value={DEFAULT_ESCROW_CONTRACT_ID}
+                title={DEFAULT_ESCROW_CONTRACT_ID}
+                className="text-indigo-300 truncate max-w-[200px]"
+              />
             </div>
-
-            <div className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Designated Freelancer Stellar Address (G...)</label>
-                <input
-                  type="text"
-                  value={fundFreelancerAddress}
-                  onChange={(e) => setFundFreelancerAddress(e.target.value)}
-                  placeholder="G..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 font-mono tracking-tight text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-slate-400">
-                <div className="flex justify-between">
-                  <span>Contract Target:</span>
-                  <CryptoId
-                    value={DEFAULT_ESCROW_CONTRACT_ID}
-                    title={DEFAULT_ESCROW_CONTRACT_ID}
-                    className="text-indigo-300 truncate max-w-[200px]"
-                  />
-                </div>
-                <div className="flex justify-between">
-                  <span>Total Escrow Deposit:</span>
-                  <span className="font-bold text-white">{project.budget} {tokenSymbol}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Milestones Count:</span>
-                  <span className="text-slate-300">{project.milestones?.length || 1}</span>
-                </div>
-              </div>
+            <div className="flex justify-between">
+              <span>Total Escrow Deposit:</span>
+              <span className="font-bold text-white">{project.budget} {tokenSymbol}</span>
             </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                variant="outline"
-                onClick={() => setShowFundEscrowModal(false)}
-                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleFundEscrowOnChain}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold px-5"
-              >
-                Sign & Lock Escrow ↗
-              </Button>
+            <div className="flex justify-between">
+              <span>Milestones Count:</span>
+              <span className="text-slate-300">{project.milestones?.length || 1}</span>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <Button
+            variant="outline"
+            onClick={() => setShowFundEscrowModal(false)}
+            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleFundEscrowOnChain}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold px-5"
+          >
+            Sign & Lock Escrow ↗
+          </Button>
+        </div>
+      </AccessibleModal>
 
       {/* MODAL 4: Raise Dispute Modal */}
-      {activeDisputeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-red-500/30 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-red-400">Formal Arbitration Request</span>
-              <h3 className="text-xl font-bold text-white mt-1">Initiate Dispute on Stellar</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Calling <code className="text-red-300">raise_dispute</code> transitions the smart contract to Disputed, freezing unreleased funds until the arbiter rules.
-              </p>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Reason for Dispute</label>
-                <textarea
-                  rows={3}
-                  value={disputeReason}
-                  onChange={(e) => setDisputeReason(e.target.value)}
-                  placeholder="Detail the failure to deliver agreed specifications, missed deadlines, or communication breakdown..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
-                />
-              </div>
-              <DisputeEvidenceAttachments />
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                variant="outline"
-                onClick={() => setActiveDisputeModal(false)}
-                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleRaiseDispute}
-                className="bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold px-5"
-              >
-                Sign & Raise Dispute ↗
-              </Button>
-            </div>
-          </div>
+      <AccessibleModal
+        isOpen={activeDisputeModal}
+        onClose={() => setActiveDisputeModal(false)}
+        ariaLabel="Initiate Dispute on Stellar"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-red-500/30 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        <div>
+          <span className="text-xs font-bold uppercase tracking-wider text-red-400">Formal Arbitration Request</span>
+          <h3 className="text-xl font-bold text-white mt-1">Initiate Dispute on Stellar</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Calling <code className="text-red-300">raise_dispute</code> transitions the smart contract to Disputed, freezing unreleased funds until the arbiter rules.
+          </p>
         </div>
-      )}
+
+        <div className="space-y-4 text-xs">
+          <div>
+            <label htmlFor="dispute-reason-input" className="block text-slate-300 font-semibold mb-1.5">Reason for Dispute</label>
+            <textarea
+              id="dispute-reason-input"
+              rows={3}
+              value={disputeReason}
+              onChange={(e) => setDisputeReason(e.target.value)}
+              placeholder="Detail the failure to deliver agreed specifications, missed deadlines, or communication breakdown..."
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
+            />
+          </div>
+          <DisputeEvidenceAttachments />
+        </div>
+
+        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <Button
+            variant="outline"
+            onClick={() => setActiveDisputeModal(false)}
+            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleRaiseDispute}
+            className="bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold px-5"
+          >
+            Sign & Raise Dispute ↗
+          </Button>
+        </div>
+      </AccessibleModal>
 
       {/* MODAL 5: Arbiter Resolve Dispute Modal */}
-      {activeResolveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Arbiter Settlement Verdict</span>
-              <h3 className="text-xl font-bold text-white mt-1">Resolve Escrow Allocation</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Enter the settlement amounts. Total allocation cannot exceed the project budget ({project.budget} {tokenSymbol}).
-              </p>
-            </div>
+      <AccessibleModal
+        isOpen={activeResolveModal}
+        onClose={() => setActiveResolveModal(false)}
+        ariaLabel="Resolve Escrow Allocation"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
+      >
+        <div>
+          <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Arbiter Settlement Verdict</span>
+          <h3 className="text-xl font-bold text-white mt-1">Resolve Escrow Allocation</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Enter the settlement amounts. Total allocation cannot exceed the project budget ({project.budget} {tokenSymbol}).
+          </p>
+        </div>
 
-            <div className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Client Refund Amount ({tokenSymbol})</label>
-                <input
-                  type="number"
-                  value={resolveClientAmount}
-                  onChange={(e) => setResolveClientAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                  placeholder="Amount refunded to client"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
+        <div className="space-y-4 text-xs">
+          <div>
+            <label htmlFor="resolve-client-amount" className="block text-slate-300 font-semibold mb-1.5">Client Refund Amount ({tokenSymbol})</label>
+            <input
+              id="resolve-client-amount"
+              type="number"
+              value={resolveClientAmount}
+              onChange={(e) => setResolveClientAmount(e.target.value === '' ? '' : Number(e.target.value))}
+              placeholder="Amount refunded to client"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
+            />
+          </div>
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Freelancer Payout Amount ({tokenSymbol})</label>
-                <input
-                  type="number"
-                  value={resolveFreelancerAmount}
-                  onChange={(e) => setResolveFreelancerAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                  placeholder="Amount paid to freelancer"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                variant="outline"
-                onClick={() => setActiveResolveModal(false)}
-                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleResolveDispute}
-                className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
-              >
-                Execute Ruling on Stellar ↗
-              </Button>
-            </div>
+          <div>
+            <label htmlFor="resolve-freelancer-amount" className="block text-slate-300 font-semibold mb-1.5">Freelancer Payout Amount ({tokenSymbol})</label>
+            <input
+              id="resolve-freelancer-amount"
+              type="number"
+              value={resolveFreelancerAmount}
+              onChange={(e) => setResolveFreelancerAmount(e.target.value === '' ? '' : Number(e.target.value))}
+              placeholder="Amount paid to freelancer"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
+            />
           </div>
         </div>
-      )}
+
+        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <Button
+            variant="outline"
+            onClick={() => setActiveResolveModal(false)}
+            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleResolveDispute}
+            className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
+          >
+            Execute Ruling on Stellar ↗
+          </Button>
+        </div>
+      </AccessibleModal>
 
       {/* TRANSACTION PROGRESS OVERLAY MODAL */}
-      {txState.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
-            {txState.stage === 'error' ? (
-              <div className="w-14 h-14 bg-red-500/10 text-red-400 border border-red-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl">
-                ✕
-              </div>
-            ) : txState.stage === 'success' ? (
-              <div className="w-14 h-14 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl">
-                ✓
-              </div>
-            ) : (
-              <div className="w-14 h-14 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto">
-                <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
-              </div>
-            )}
+      <AccessibleModal
+        isOpen={txState.isOpen}
+        onClose={() => {
+          if (txState.stage === 'success' || txState.stage === 'error') {
+            setTxState((prev) => ({ ...prev, isOpen: false }));
+          }
+        }}
+        closeOnBackdropClick={false}
+        role={txState.stage === 'error' ? 'alertdialog' : 'dialog'}
+        ariaLabel="Transaction progress"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in"
+        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl"
+      >
+        <div role={txState.stage === 'error' ? 'alert' : 'status'} aria-live={txState.stage === 'error' ? 'assertive' : 'polite'}>
+          {txState.stage === 'error' ? (
+            <div className="w-14 h-14 bg-red-500/10 text-red-400 border border-red-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl mb-4" aria-hidden="true">
+              ✕
+            </div>
+          ) : txState.stage === 'success' ? (
+            <div className="w-14 h-14 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl mb-4" aria-hidden="true">
+              ✓
+            </div>
+          ) : (
+            <div className="w-14 h-14 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4" aria-hidden="true">
+              <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          )}
 
-            <h3 className="text-lg font-bold text-white capitalize">
-              {txState.stage === 'simulating' && 'Simulating Contract Call...'}
-              {txState.stage === 'signing' && 'Awaiting Wallet Signature...'}
-              {txState.stage === 'submitting' && 'Broadcasting to Stellar...'}
-              {txState.stage === 'polling' && 'Confirming on Ledger...'}
-              {txState.stage === 'success' && 'Transaction Confirmed!'}
-              {txState.stage === 'error' && 'Transaction Error'}
-              {txState.stage === 'preparing' && 'Preparing Transaction...'}
-            </h3>
+          <h3 className="text-lg font-bold text-white capitalize">
+            {txState.stage === 'simulating' && 'Simulating Contract Call...'}
+            {txState.stage === 'signing' && 'Awaiting Wallet Signature...'}
+            {txState.stage === 'submitting' && 'Broadcasting to Stellar...'}
+            {txState.stage === 'polling' && 'Confirming on Ledger...'}
+            {txState.stage === 'success' && 'Transaction Confirmed!'}
+            {txState.stage === 'error' && 'Transaction Error'}
+            {txState.stage === 'preparing' && 'Preparing Transaction...'}
+          </h3>
 
-            <p className="text-xs text-slate-400 leading-relaxed max-w-xs mx-auto">
-              {txState.error || txState.message}
-            </p>
-
-            {txState.txHash && (
-              <a
-                href={getStellarExplorerUrl(txState.txHash, 'tx')}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-indigo-400 hover:text-indigo-300 underline block pt-1"
-              >
-                View on Stellar.Expert (<CryptoId value={txState.txHash} head={8} tail={0} />) ↗
-              </a>
-            )}
-
-            {(txState.stage === 'success' || txState.stage === 'error') && (
-              <Button
-                onClick={() => setTxState((prev) => ({ ...prev, isOpen: false }))}
-                className="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs py-2"
-              >
-                Close
-              </Button>
-            )}
-          </div>
+          <p className="text-xs text-slate-400 leading-relaxed max-w-xs mx-auto mt-2">
+            {txState.error || txState.message}
+          </p>
         </div>
-      )}
+
+        {txState.txHash && (
+          <a
+            href={getStellarExplorerUrl(txState.txHash, 'tx')}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-indigo-400 hover:text-indigo-300 underline block pt-1"
+          >
+            View on Stellar.Expert (<CryptoId value={txState.txHash} head={8} tail={0} />) ↗
+          </a>
+        )}
+
+        {(txState.stage === 'success' || txState.stage === 'error') && (
+          <Button
+            onClick={() => setTxState((prev) => ({ ...prev, isOpen: false }))}
+            className="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs py-2"
+          >
+            Close
+          </Button>
+        )}
+      </AccessibleModal>
 
       {lightboxImage && (
         <ImageLightboxModal
@@ -1576,6 +1616,6 @@ export default function ProjectDetailsPage() {
         project={project}
         onUpdated={fetchProject}
       />
-    </div>
+    </main>
   );
 }

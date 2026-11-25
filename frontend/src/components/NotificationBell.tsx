@@ -22,15 +22,18 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => setIsOpen(true)}
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
         className="relative p-2.5 rounded-xl bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-[#a1a1aa] hover:text-white transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50"
         title="Notifications"
-        aria-label="Open notifications"
+        aria-label={unreadCount > 0 ? `Open notifications (${unreadCount} unread)` : 'Open notifications'}
       >
         <svg
           className="w-5 h-5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
@@ -42,7 +45,10 @@ export default function NotificationBell() {
 
         {/* Unread Counter Badge */}
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white shadow-md animate-pulse">
+          <span
+            aria-hidden="true"
+            className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white shadow-md animate-pulse"
+          >
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -52,11 +58,13 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => setScheduleOpen(true)}
+        aria-expanded={scheduleOpen}
+        aria-haspopup="dialog"
         className="relative p-2.5 rounded-xl bg-[#18181b] hover:bg-[#27272a] border border-[#27272a] text-amber-400 hover:text-amber-300 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/50"
         title="Milestone reminder schedule"
         aria-label="Open milestone reminder schedule"
       >
-        ⏰
+        <span aria-hidden="true">⏰</span>
       </button>
 
       {/* Slide-over Notification Drawer */}

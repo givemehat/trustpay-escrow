@@ -8,7 +8,7 @@ import { getPagination } from '@/lib/pagination';
 import { useRouter } from 'next/navigation';
 import { useWalletStore, canSubmitProposal } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
 
 import { Milestone, Project, Proposal } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
@@ -413,9 +413,6 @@ export function FreelancerDashboard() {
     }
   };
 
-  useEscapeKey(() => setViewingProjectDetails(null), Boolean(viewingProjectDetails));
-  useEscapeKey(() => setSelectedProject(null), Boolean(selectedProject));
-
   return (
     <div className="w-full min-h-screen bg-[#121212] text-[#f4f4f5] font-sans p-3 sm:p-6 md:p-10 transition-colors duration-200">
       <div className="max-w-4xl mx-auto space-y-5 sm:space-y-6">
@@ -771,10 +768,15 @@ export function FreelancerDashboard() {
       </div>
 
       {/* Project Details Modal */}
-      {viewingProjectDetails && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
-            
+      <AccessibleModal
+        isOpen={Boolean(viewingProjectDetails)}
+        onClose={() => setViewingProjectDetails(null)}
+        ariaLabel={viewingProjectDetails ? `Project details: ${viewingProjectDetails.title}` : 'Project details'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+      >
+        {viewingProjectDetails && (
+          <>
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-3 sm:pb-4 border-b border-[#27272a] gap-3">
               <div>
@@ -803,10 +805,12 @@ export function FreelancerDashboard() {
                   {viewingProjectDetails.budget} {viewingProjectDetails.token || 'USDC'}
                 </span>
                 <button
+                  type="button"
                   onClick={() => setViewingProjectDetails(null)}
+                  aria-label="Close project details"
                   className="text-[#a1a1aa] hover:text-white transition-colors text-base sm:text-lg"
                 >
-                  ✕
+                  <span aria-hidden="true">✕</span>
                 </button>
               </div>
             </div>
@@ -940,25 +944,32 @@ export function FreelancerDashboard() {
               </button>
               {renderProjectActionBadge(viewingProjectDetails, true)}
             </div>
-
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Application Submission Modal */}
-      {selectedProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(selectedProject)}
+        onClose={() => setSelectedProject(null)}
+        ariaLabel={selectedProject ? `Apply for ${selectedProject.title}` : 'Apply for project'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl"
+      >
+        {selectedProject && (
+          <>
             <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
               <div>
                 <h3 className="text-lg font-bold text-white">Apply for Project</h3>
                 <p className="text-xs text-[#a1a1aa] mt-0.5">{selectedProject.title} ({selectedProject.budget} {selectedProject.token || 'USDC'})</p>
               </div>
               <button
+                type="button"
                 onClick={() => setSelectedProject(null)}
+                aria-label="Close application modal"
                 className="text-[#a1a1aa] hover:text-white transition-colors"
               >
-                ✕
+                <span aria-hidden="true">✕</span>
               </button>
             </div>
 
@@ -1037,9 +1048,9 @@ export function FreelancerDashboard() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Image Lightbox Modal */}
       <ImageLightboxModal

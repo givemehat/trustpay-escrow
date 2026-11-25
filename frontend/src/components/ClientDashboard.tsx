@@ -8,7 +8,7 @@ import { getPagination } from '@/lib/pagination';
 import { useRouter } from 'next/navigation';
 import { useWalletStore, useActiveWalletAddress } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
 
 import { Milestone, Project, Applicant } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
@@ -1152,8 +1152,11 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
 
                   <button
                     type="button"
+                    role="switch"
+                    aria-checked={formLockImmediately}
+                    aria-label="Lock escrow funds immediately"
                     onClick={() => setFormLockImmediately(!formLockImmediately)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#18181b] ${
                       formLockImmediately ? 'bg-indigo-600' : 'bg-[#3f3f46]'
                     }`}
                   >
@@ -1208,8 +1211,11 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                   {/* Toggle Switch Button */}
                   <button
                     type="button"
+                    role="switch"
+                    aria-checked={formYieldEnabled}
+                    aria-label="Enable Blend DeFi yield"
                     onClick={() => setFormYieldEnabled(!formYieldEnabled)}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#18181b] ${
                       formYieldEnabled ? 'bg-emerald-500' : 'bg-[#3f3f46]'
                     }`}
                   >
@@ -1372,9 +1378,10 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                                 handleRemoveAttachment(idx);
                               }}
                               className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center text-[8px] font-extrabold leading-none shadow-md transition-transform hover:scale-110 z-10"
+                              aria-label="Remove attachment"
                               title="Remove attachment"
                             >
-                              ✕
+                              <span aria-hidden="true">✕</span>
                             </button>
 
                             {/* Thumbnail preview or File icon */}
@@ -1671,18 +1678,24 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
       </div>
 
       {/* Modal for adding a new milestone with all backend fields */}
-      {showAddMilestoneModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#3f3f46] rounded-2xl max-w-lg w-full p-6 sm:p-7 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
-              <h3 className="text-lg font-bold text-white">Add New Milestone</h3>
-              <button
-                onClick={() => setShowAddMilestoneModal(false)}
-                className="text-[#a1a1aa] hover:text-white transition-colors"
-              >
-                ✕
-              </button>
-            </div>
+      <AccessibleModal
+        isOpen={showAddMilestoneModal}
+        onClose={() => setShowAddMilestoneModal(false)}
+        ariaLabel="Add New Milestone"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#3f3f46] rounded-2xl max-w-lg w-full p-6 sm:p-7 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
+          <h3 className="text-lg font-bold text-white">Add New Milestone</h3>
+          <button
+            type="button"
+            onClick={() => setShowAddMilestoneModal(false)}
+            aria-label="Close add milestone modal"
+            className="text-[#a1a1aa] hover:text-white transition-colors"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
+        </div>
 
             <div className="space-y-4">
               <div className="space-y-1.5">
@@ -1788,9 +1801,7 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                 Add Milestone
               </button>
             </div>
-          </div>
-        </div>
-      )}
+      </AccessibleModal>
 
       {/* Image Lightbox Modal */}
       <ImageLightboxModal
@@ -1821,25 +1832,29 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
         onClose={() => setReminderProject(null)}
       />
 
-      {auditProject && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/80 p-3 backdrop-blur-md sm:p-6"
-          onClick={() => setAuditProject(null)}
-        >
-          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto" onClick={(event) => event.stopPropagation()}>
+      <AccessibleModal
+        isOpen={Boolean(auditProject)}
+        onClose={() => setAuditProject(null)}
+        ariaLabel={auditProject ? `Audit log for ${auditProject.title}` : 'Project audit log'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/80 p-3 backdrop-blur-md sm:p-6"
+        dialogClassName="max-h-[90vh] w-full max-w-4xl overflow-y-auto"
+      >
+        {auditProject && (
+          <>
             <div className="mb-3 flex justify-end">
               <button
                 type="button"
                 onClick={() => setAuditProject(null)}
+                aria-label="Close audit log"
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-xs font-bold text-slate-300 hover:text-white"
               >
-                Close Audit Log ✕
+                Close Audit Log <span aria-hidden="true">✕</span>
               </button>
             </div>
             <ProjectAuditLog project={auditProject} />
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Enterprise Accounts Payable Export Modal */}
       <AccountsPayableExportModal

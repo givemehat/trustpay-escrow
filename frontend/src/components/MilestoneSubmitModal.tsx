@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useWalletStore } from '@/store/walletStore';
 import { formatAttachmentLine, hasSubtleCrypto, sha256Hex, truncateHash } from '@/lib/checksum';
 import { authFetch } from '@/lib/api';
-import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
+import { announcePolite } from '@/components/a11y/LiveAnnouncer';
 import { submitMilestoneOnChain, type TxStage } from '@/lib/soroban';
 import {
   deliverableSubmissionSchema,
@@ -100,14 +101,11 @@ export function MilestoneSubmitModal({
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const objectUrlsRef = useRef(new Set<string>());
   const nextFileId = useRef(0);
+  const titleId = useId();
 
   useEffect(() => () => {
     objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
-
-  useEscapeKey(() => {
-    if (!submitting) onClose();
-  }, isOpen);
 
   if (!isOpen) return null;
 
@@ -252,7 +250,10 @@ export function MilestoneSubmitModal({
         projectIdOnChain: project.project_id_onchain ?? project.id ?? 1,
         milestoneIndex: milestone.milestone_index,
         deliverableHash,
-        onStatusUpdate: (stage, message) => setTxStatus({ stage, message }),
+        onStatusUpdate: (stage, message) => {
+          setTxStatus({ stage, message });
+          announcePolite(message);
+        },
       });
 
       const attachments = [
@@ -278,6 +279,7 @@ export function MilestoneSubmitModal({
         throw new Error(payload.error || 'Could not save the deliverable metadata.');
       }
 
+      announcePolite('Deliverable submitted on-chain. Client review timelock started.');
       toast.success('Deliverable submitted on-chain. Client review timelock started.');
       onSubmitted?.({ txHash: result.txHash, deliverableHash });
       setNotes('');
@@ -298,25 +300,31 @@ export function MilestoneSubmitModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="bg-[#18181b] border border-[#27272a] rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto custom-scrollbar shadow-2xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[#27272a] bg-[#18181b]/95 px-5 py-4">
-          <div>
-            <h2 className="text-lg sm:text-xl font-bold text-white">Submit Milestone Deliverable</h2>
-            <p className="text-[11px] sm:text-xs text-[#a1a1aa] mt-0.5">
-              {milestone.title} &middot; {project.title} &middot; {milestone.amount} {project.token || 'USDC'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            aria-label="Close submission modal"
-            className="text-[#a1a1aa] hover:text-white text-lg disabled:opacity-40"
-          >
-            ✕
-          </button>
+    <AccessibleModal
+      isOpen={isOpen}
+      onClose={submitting ? undefined : onClose}
+      closeOnBackdropClick={false}
+      ariaLabelledBy={titleId}
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn"
+      dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto custom-scrollbar shadow-2xl"
+    >
+      <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[#27272a] bg-[#18181b]/95 px-5 py-4">
+        <div>
+          <h2 id={titleId} className="text-lg sm:text-xl font-bold text-white">Submit Milestone Deliverable</h2>
+          <p className="text-[11px] sm:text-xs text-[#a1a1aa] mt-0.5">
+            {milestone.title} &middot; {project.title} &middot; {milestone.amount} {project.token || 'USDC'}
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={submitting}
+          aria-label="Close submission modal"
+          className="text-[#a1a1aa] hover:text-white text-lg disabled:opacity-40"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 p-5">
           <section className="space-y-2">
@@ -435,6 +443,7 @@ export function MilestoneSubmitModal({
               </button>
               <input
                 ref={fileInputRef}
+                aria-label="Attach deliverable files"
                 data-testid="deliverable-file-input"
                 type="file"
                 multiple
@@ -509,21 +518,27 @@ export function MilestoneSubmitModal({
             )}
           </section>
 
-          {txStatus && (
-            <div
-              data-testid="submission-status"
-              className={`rounded-xl border px-3 py-2 text-xs ${
-                txStatus.stage === 'error'
-                  ? 'bg-[#450a0a]/60 border-[#7f1d1d] text-red-300'
-                  : txStatus.stage === 'success'
-                    ? 'bg-[#052e16]/60 border-[#14532d] text-emerald-300'
-                    : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
-              }`}
-            >
-              <span className="font-bold uppercase tracking-wide mr-2">{txStatus.stage}</span>
-              {txStatus.message}
-            </div>
-          )}
+          <div
+            role={txStatus?.stage === 'error' ? 'alert' : 'status'}
+            aria-live={txStatus?.stage === 'error' ? 'assertive' : 'polite'}
+            aria-atomic="true"
+          >
+            {txStatus && (
+              <div
+                data-testid="submission-status"
+                className={`rounded-xl border px-3 py-2 text-xs ${
+                  txStatus.stage === 'error'
+                    ? 'bg-[#450a0a]/60 border-[#7f1d1d] text-red-300'
+                    : txStatus.stage === 'success'
+                      ? 'bg-[#052e16]/60 border-[#14532d] text-emerald-300'
+                      : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
+                }`}
+              >
+                <span className="font-bold uppercase tracking-wide mr-2">{txStatus.stage}</span>
+                {txStatus.message}
+              </div>
+            )}
+          </div>
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-[#27272a] pt-4">
             <p className="text-[10px] text-[#71717a] max-w-xs leading-relaxed">
@@ -542,6 +557,7 @@ export function MilestoneSubmitModal({
                 type="submit"
                 data-testid="submit-deliverable"
                 disabled={submitting}
+                aria-busy={submitting || undefined}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50"
               >
                 {submitting ? 'Signing & Submitting…' : 'Submit Deliverable ↗'}
@@ -549,14 +565,13 @@ export function MilestoneSubmitModal({
             </div>
           </div>
         </form>
-      </div>
 
-      <ImageLightboxModal
-        imageUrl={lightbox?.url || null}
-        imageAlt={lightbox?.name}
-        onClose={() => setLightbox(null)}
-      />
-    </div>
+        <ImageLightboxModal
+          imageUrl={lightbox?.url || null}
+          imageAlt={lightbox?.name}
+          onClose={() => setLightbox(null)}
+        />
+      </AccessibleModal>
   );
 }
 

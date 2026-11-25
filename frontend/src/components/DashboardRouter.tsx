@@ -18,13 +18,13 @@ export function DashboardRouter() {
   // AUTH GUARD: If user has not connected wallet, block dashboard and require wallet connect
   if (!address) {
     return (
-      <div className="min-h-screen bg-[#09090b] text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      <main id="main-content" tabIndex={-1} className="min-h-screen bg-[#09090b] text-white flex flex-col items-center justify-center p-6 relative overflow-hidden">
         {/* Ambient Glows */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-gradient-to-b from-blue-600/15 to-purple-600/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-gradient-to-b from-blue-600/15 to-purple-600/10 rounded-full blur-3xl pointer-events-none" aria-hidden="true"></div>
 
         <div className="relative z-10 max-w-lg w-full text-center space-y-6">
           <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-[#18181b] border border-[#27272a] text-xs font-semibold text-[#a1a1aa] shadow-xl">
-            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" aria-hidden="true"></span>
             <span>Authentication Required</span>
           </div>
 
@@ -41,7 +41,7 @@ export function DashboardRouter() {
             <WalletConnect />
           </div>
         </div>
-      </div>
+      </main>
     );
   }
 
@@ -50,13 +50,14 @@ export function DashboardRouter() {
   return (
     <div className="min-h-screen bg-[#121212] text-white">
       {/* Top Global Capability Switcher Bar */}
-      <div className="w-full bg-[#18181b] border-b border-[#27272a] px-4 py-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs sm:text-sm">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <header className="w-full bg-[#18181b] border-b border-[#27272a] px-4 py-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs sm:text-sm">
+        <div className="flex items-center space-x-2">
           <span className="font-extrabold text-blue-500 tracking-wider">TRUSTPAY ESCROW</span>
-          <span className="text-[#52525b]">|</span>
+          <span className="text-[#52525b]" aria-hidden="true">|</span>
           <span className="text-[#a1a1aa]">Wallet:</span>
           <WalletAddressCopy key={displayedAddress} address={displayedAddress} header />
           <button
+            type="button"
             onClick={disconnect}
             className="text-[11px] text-[#71717a] hover:text-red-400 font-semibold underline transition-colors ml-2"
           >
@@ -75,12 +76,14 @@ export function DashboardRouter() {
             <RoleSwitcher />
           </div>
         </div>
-      </div>
+      </header>
 
       {/* Render Active View matching Capability */}
-      {activeRole === 'client' && <ClientDashboard />}
-      {activeRole === 'freelancer' && <FreelancerDashboard />}
-      {activeRole === 'arbiter' && <ArbiterDashboard />}
+      <main id="main-content" tabIndex={-1}>
+        {activeRole === 'client' && <ClientDashboard />}
+        {activeRole === 'freelancer' && <FreelancerDashboard />}
+        {activeRole === 'arbiter' && <ArbiterDashboard />}
+      </main>
     </div>
   );
 }

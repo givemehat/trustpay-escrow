@@ -20,7 +20,7 @@ export default function AnalyticsPage() {
   }, [attempt]);
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-8">
+    <main id="main-content" tabIndex={-1} className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-8">
       <div className="mx-auto max-w-6xl">
         <Link href="/projects" className="text-sm text-blue-400 hover:underline">← Projects</Link>
         <h1 className="mt-4 text-3xl font-bold sm:text-4xl">Escrow analytics</h1>

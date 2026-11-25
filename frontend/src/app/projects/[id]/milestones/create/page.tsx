@@ -20,7 +20,7 @@ export default function CreateMilestonesPage() {
   } = useMilestonesForm(projectId);
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 font-sans transition-colors duration-300">
+    <main id="main-content" tabIndex={-1} className="min-h-screen bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 font-sans transition-colors duration-300">
       <div className="max-w-4xl mx-auto">
         <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700">
           <div className="px-8 py-10 sm:px-12 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-800">
@@ -169,6 +169,6 @@ export default function CreateMilestonesPage() {
           </form>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

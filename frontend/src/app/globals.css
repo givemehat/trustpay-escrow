@@ -10,6 +10,7 @@
   --input-bg: #ffffff;
   --input-border: #d4d4d8;
   --input-focus-border: #3b82f6;
+  --ring: #2563eb;
 }
 
 /* Dark theme */
@@ -21,6 +22,7 @@
   --input-bg: #232326;
   --input-border: #333338;
   --input-focus-border: #3b82f6;
+  --ring: #60a5fa;
 }
 
 /* OLED True Black theme */
@@ -33,6 +35,7 @@
   --input-bg: #09090b;
   --input-border: #27272a;
   --input-focus-border: #3b82f6;
+  --ring: #60a5fa;
 }
 
 /* System preference fallback */
@@ -87,6 +90,20 @@ button {
   cursor: pointer;
 }
 
+/* Global keyboard focus indicator (WCAG 2.4.7 / 1.4.11) */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring, #3b82f6);
+  outline-offset: 2px;
+}
+
+main#main-content {
+  scroll-margin-top: 5rem;
+}
+
+main#main-content:focus {
+  outline: none;
+}
+
 /* Input styling with theme support */
 .dark-input {
   background-color: var(--input-bg);
@@ -98,7 +115,13 @@ button {
 .dark-input:focus {
   border-color: var(--input-focus-border);
   outline: none;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+}
+
+.dark-input:focus-visible {
+  border-color: var(--input-focus-border);
+  outline: 2px solid var(--ring, #3b82f6);
+  outline-offset: 1px;
 }
 
 /* Custom scrollbar with theme support */
