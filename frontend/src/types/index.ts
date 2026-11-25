@@ -16,6 +16,7 @@ export interface Milestone {
   deliverable_url?: string;
   deliverable_notes?: string;
   deliverable_type?: string;
+  tx_hash?: string;
 }
 
 export interface Project {
@@ -60,9 +61,11 @@ export interface Applicant {
   pitch: string;
   cover_note?: string;
   portfolio_url?: string;
+  demo_url?: string;
   status?: 'pending' | 'accepted' | 'denied' | 'granted' | 'rejected';
   granted?: boolean;
   created_at?: string;
+  zk_attestation?: unknown;
 }
 
 export interface Proposal {
@@ -96,4 +99,29 @@ export interface PaginationMeta {
   totalPages: number;
   hasNextPage: boolean;
   hasPrevPage: boolean;
+}
+
+/** One payout tranche in a DAO escrow proposal. */
+export interface DaoProposalMilestone {
+  title: string;
+  amount: number;
+  due_date?: string;
+}
+
+/** Escrow terms plus governance settings used to generate a DAO proposal. */
+export interface DaoProposalInput {
+  proposalTitle: string;
+  projectTitle: string;
+  description: string;
+  category?: string;
+  token: string;
+  tokenAddress: string;
+  /** DAO treasury account that funds and authorises the escrow (the contract's `client`). */
+  treasuryAddress: string;
+  freelancerAddress?: string;
+  arbiterAddress?: string;
+  milestones: DaoProposalMilestone[];
+  yieldEnabled: boolean;
+  deadline?: string;
+  votingPeriodDays: number;
 }

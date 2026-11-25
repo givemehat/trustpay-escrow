@@ -1,10 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import NumberRoll from './NumberRoll';
 import { toast } from 'sonner';
+import { Pagination } from './Pagination';
+import { getPagination } from '@/lib/pagination';
 import { useRouter } from 'next/navigation';
-import { useWalletStore } from '@/store/walletStore';
+import { useWalletStore, canSubmitProposal } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
 
 import { Milestone, Project, Proposal } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
@@ -12,6 +16,7 @@ import { MilestoneSubmitModal } from './MilestoneSubmitModal';
 import { ProjectChatModal } from './ProjectChatModal';
 import { ProjectCardSkeletonList, ProposalSkeletonList } from '@/components/skeletons';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { ShareMilestoneButton } from '@/components/ShareableMilestoneCard';
 import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab';
@@ -19,7 +24,7 @@ import { triggerCelebrationConfetti } from '@/lib/confetti';
 
 export function FreelancerDashboard() {
   const router = useRouter();
-  const { address } = useWalletStore();
+  const { address, activeRole } = useWalletStore();
   const [activeTab, setActiveTab] = usePersistentTab<'explore' | 'proposals' | 'jobs'>({
     key: 'freelancer_active_tab',
     defaultTab: 'explore',
@@ -67,11 +72,18 @@ export function FreelancerDashboard() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const listRef = useRef<HTMLDivElement>(null);
+  const projectRequest = useRef(0);
   const [totalProjects, setTotalProjects] = useState(0);
 
   // Open Apply Modal and pre-fill wallet address
   const handleOpenApplyModal = (proj: Project) => {
+    const check = canSubmitProposal(proj, address, activeRole);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You cannot apply to your own escrow');
+      return;
+    }
     setSelectedProject(proj);
     setProposalWalletAddress(address || '');
     setProposalCoverNote('');
@@ -106,6 +118,22 @@ export function FreelancerDashboard() {
 
   // Helper to render action button or status badge for a project
   const renderProjectActionBadge = (proj: Project, isModal = false) => {
+    const clientAddr = proj.client_address || (proj as any).client?.stellar_address || (proj as any).client;
+    const isOwnProject = Boolean(clientAddr && address && clientAddr.toLowerCase() === address.toLowerCase());
+    if (isOwnProject) {
+      return (
+        <span
+          data-testid="own-project-badge"
+          className={
+            isModal
+              ? "px-5 py-2.5 bg-[#27272a] text-[#a1a1aa] border border-[#3f3f46] text-xs font-semibold rounded-xl flex items-center gap-1.5 shadow-md cursor-not-allowed"
+              : "px-3.5 py-1.5 bg-[#27272a] text-[#a1a1aa] border border-[#3f3f46] text-xs font-semibold rounded-xl flex items-center gap-1 cursor-not-allowed"
+          }
+        >
+          <span>Owner (Client)</span>
+        </span>
+      );
+    }
     const existingProposal = proposals.find((p) => p.project_id === proj.id) ||
       (proj.applicants || []).find((a: any) => a.stellar_address === address || a.freelancer_address === address) ||
       (proj.proposals || []).find((p: any) => p.freelancer_address === address || p.stellar_address === address);
@@ -134,6 +162,7 @@ export function FreelancerDashboard() {
               <span>💬 Chat with Client</span>
             </button>
             <DownloadReceiptButton project={proj} />
+            <ShareMilestoneButton project={proj} />
             <span className={isModal 
               ? "px-5 py-2.5 bg-[#052e16] text-[#22c55e] border border-[#14532d] text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-md"
               : "px-3.5 py-1.5 bg-[#052e16] text-[#22c55e] border border-[#14532d] text-xs font-bold rounded-xl flex items-center gap-1"
@@ -213,13 +242,20 @@ export function FreelancerDashboard() {
   };
 
   // Fetch real projects from backend
-  const fetchBackendProjects = async (pageToFetch = currentPage) => {
+  const fetchBackendProjects = async (pageToFetch = currentPage, size = pageSize) => {
+    const requestId = ++projectRequest.current;
     setLoading(true);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-      const res = await fetch(`${apiUrl}/api/projects?page=${pageToFetch}&limit=6`);
+      const res = await fetch(`${apiUrl}/api/projects?page=${pageToFetch}&limit=${size}`);
       if (res.ok) {
         const data = await res.json();
+        if (requestId !== projectRequest.current) return;
+        const nextPage = getPagination(data.pagination?.totalProjects ?? 0, pageToFetch, size).page;
+        if (data.pagination && nextPage !== pageToFetch) {
+          await fetchBackendProjects(nextPage, size);
+          return;
+        }
         if (data.projects && Array.isArray(data.projects)) {
           const mapped: Project[] = data.projects.map((p: any) => ({
             id: p.id,
@@ -253,14 +289,14 @@ export function FreelancerDashboard() {
         }
         if (data.pagination) {
           setCurrentPage(data.pagination.page);
-          setTotalPages(data.pagination.totalPages);
+          setPageSize(size);
           setTotalProjects(data.pagination.totalProjects);
         }
       }
     } catch (err) {
-      toast.error('Could not load projects from backend');
+      if (requestId === projectRequest.current) toast.error('Could not load projects from backend');
     } finally {
-      setLoading(false);
+      if (requestId === projectRequest.current) setLoading(false);
     }
   };
 
@@ -294,7 +330,7 @@ export function FreelancerDashboard() {
   };
 
   useEffect(() => {
-    fetchBackendProjects();
+    fetchBackendProjects(1);
     fetchMyProposals();
   }, [address]);
 
@@ -321,6 +357,12 @@ export function FreelancerDashboard() {
     }
 
     if (!selectedProject) return;
+
+    const check = canSubmitProposal(selectedProject, address, activeRole);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You cannot apply to your own escrow');
+      return;
+    }
 
     setIsSubmittingProposal(true);
 
@@ -413,20 +455,47 @@ export function FreelancerDashboard() {
                   : 'text-[#a1a1aa] hover:text-white hover:bg-[#27272a]/50'
               }`}
             >
-              My Proposals ({proposals.length})
+              My Proposals (<NumberRoll value={proposals.length} />)
             </button>
           </div>
         </div>
 
         {/* VIEW 1: EXPLORE PROJECTS */}
         {activeTab === 'explore' && (
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-4 sm:p-6 md:p-8 shadow-2xl space-y-5 sm:space-y-6">
+          <div ref={listRef} className="scroll-mt-6 bg-[#18181b] border border-[#27272a] rounded-2xl p-4 sm:p-6 md:p-8 shadow-2xl space-y-5 sm:space-y-6">
             
+            {/* Dashboard Statistic Cards with Smooth NumberRoll Counter */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-[#121214] border border-[#27272a] rounded-xl p-4">
+                <div className="text-xs text-[#a1a1aa] font-medium">Total Volume</div>
+                <div className="text-xl sm:text-2xl font-black text-white mt-1">
+                  <NumberRoll
+                    value={projects.reduce((sum, p) => sum + (Number(p.budget) || 0), 0)}
+                    prefix="$"
+                    decimals={0}
+                  />
+                </div>
+              </div>
+              <div className="bg-[#121214] border border-[#27272a] rounded-xl p-4">
+                <div className="text-xs text-[#a1a1aa] font-medium">Active Escrows</div>
+                <div className="text-xl sm:text-2xl font-black text-indigo-400 mt-1">
+                  <NumberRoll value={projects.length} />
+                </div>
+              </div>
+              <div className="bg-[#121214] border border-[#27272a] rounded-xl p-4">
+                <div className="text-xs text-[#a1a1aa] font-medium">Submitted Proposals</div>
+                <div className="text-xl sm:text-2xl font-black text-emerald-400 mt-1">
+                  <NumberRoll value={proposals.length} />
+                </div>
+              </div>
+            </div>
+
             {/* Header & Filter Controls */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
               <div>
-                <h2 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight text-white">
-                  Available Projects
+                <h2 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight text-white flex items-center gap-1.5">
+                  <span>Available Projects</span>
+                  <span className="text-xs font-normal text-[#a1a1aa]">(<NumberRoll value={filteredProjects.length} />)</span>
                 </h2>
                 <p className="text-[11px] sm:text-xs md:text-sm text-[#a1a1aa] mt-0.5">
                   Apply for open escrows and submit your milestones.
@@ -559,64 +628,18 @@ export function FreelancerDashboard() {
                     )}
                   </div>
                 ))}
-
-                {/* Pagination Bar */}
-                {totalPages > 1 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-[#27272a]">
-                    <div className="text-xs text-[#a1a1aa]">
-                      Showing Page <span className="font-bold text-white">{currentPage}</span> of{' '}
-                      <span className="font-bold text-white">{totalPages}</span> ({totalProjects} total projects)
-                    </div>
-                    <div className="flex items-center space-x-1.5">
-                      <button
-                        onClick={() => {
-                          if (currentPage > 1) {
-                            const prev = currentPage - 1;
-                            setCurrentPage(prev);
-                            fetchBackendProjects(prev);
-                          }
-                        }}
-                        disabled={currentPage <= 1}
-                        className="px-3 py-1.5 bg-[#232326] hover:bg-[#27272a] disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-[#e4e4e7] rounded-xl border border-[#333338] transition-colors"
-                      >
-                        ← Previous
-                      </button>
-
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
-                        <button
-                          key={pg}
-                          onClick={() => {
-                            setCurrentPage(pg);
-                            fetchBackendProjects(pg);
-                          }}
-                          className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-colors ${
-                            pg === currentPage
-                              ? 'bg-indigo-600 text-white border border-indigo-500'
-                              : 'bg-[#232326] hover:bg-[#27272a] text-[#a1a1aa] border border-[#333338]'
-                          }`}
-                        >
-                          {pg}
-                        </button>
-                      ))}
-
-                      <button
-                        onClick={() => {
-                          if (currentPage < totalPages) {
-                            const next = currentPage + 1;
-                            setCurrentPage(next);
-                            fetchBackendProjects(next);
-                          }
-                        }}
-                        disabled={currentPage >= totalPages}
-                        className="px-3 py-1.5 bg-[#232326] hover:bg-[#27272a] disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-[#e4e4e7] rounded-xl border border-[#333338] transition-colors"
-                      >
-                        Next →
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
+            <Pagination
+              totalItems={totalProjects}
+              page={currentPage}
+              pageSize={pageSize}
+              itemLabel="projects"
+              disabled={loading}
+              scrollTarget={listRef}
+              onPageChange={(page) => void fetchBackendProjects(page)}
+              onPageSizeChange={(size) => void fetchBackendProjects(1, size)}
+            />
           </div>
         )}
 
@@ -747,10 +770,15 @@ export function FreelancerDashboard() {
       </div>
 
       {/* Project Details Modal */}
-      {viewingProjectDetails && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
-            
+      <AccessibleModal
+        isOpen={Boolean(viewingProjectDetails)}
+        onClose={() => setViewingProjectDetails(null)}
+        ariaLabel={viewingProjectDetails ? `Project details: ${viewingProjectDetails.title}` : 'Project details'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+      >
+        {viewingProjectDetails && (
+          <>
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-3 sm:pb-4 border-b border-[#27272a] gap-3">
               <div>
@@ -779,10 +807,12 @@ export function FreelancerDashboard() {
                   {viewingProjectDetails.budget} {viewingProjectDetails.token || 'USDC'}
                 </span>
                 <button
+                  type="button"
                   onClick={() => setViewingProjectDetails(null)}
+                  aria-label="Close project details"
                   className="text-[#a1a1aa] hover:text-white transition-colors text-base sm:text-lg"
                 >
-                  ✕
+                  <span aria-hidden="true">✕</span>
                 </button>
               </div>
             </div>
@@ -916,25 +946,32 @@ export function FreelancerDashboard() {
               </button>
               {renderProjectActionBadge(viewingProjectDetails, true)}
             </div>
-
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Application Submission Modal */}
-      {selectedProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(selectedProject)}
+        onClose={() => setSelectedProject(null)}
+        ariaLabel={selectedProject ? `Apply for ${selectedProject.title}` : 'Apply for project'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl"
+      >
+        {selectedProject && (
+          <>
             <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
               <div>
                 <h3 className="text-lg font-bold text-white">Apply for Project</h3>
                 <p className="text-xs text-[#a1a1aa] mt-0.5">{selectedProject.title} ({selectedProject.budget} {selectedProject.token || 'USDC'})</p>
               </div>
               <button
+                type="button"
                 onClick={() => setSelectedProject(null)}
+                aria-label="Close application modal"
                 className="text-[#a1a1aa] hover:text-white transition-colors"
               >
-                ✕
+                <span aria-hidden="true">✕</span>
               </button>
             </div>
 
@@ -1013,9 +1050,9 @@ export function FreelancerDashboard() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Image Lightbox Modal */}
       <ImageLightboxModal

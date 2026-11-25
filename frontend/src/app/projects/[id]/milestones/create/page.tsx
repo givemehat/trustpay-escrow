@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { useMilestonesForm } from '@/hooks/useMilestonesForm';
 import { useParams } from 'next/navigation';
@@ -19,7 +20,7 @@ export default function CreateMilestonesPage() {
   } = useMilestonesForm(projectId);
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 font-sans transition-colors duration-300">
+    <main id="main-content" tabIndex={-1} className="min-h-screen bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8 font-sans transition-colors duration-300">
       <div className="max-w-4xl mx-auto">
         <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden border border-gray-100 dark:border-gray-700">
           <div className="px-8 py-10 sm:px-12 border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-800">
@@ -29,6 +30,12 @@ export default function CreateMilestonesPage() {
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
               Break down your project into achievable milestones. Payments will be held in escrow and released upon completion of each milestone.
             </p>
+            <Link
+              href={`/projects/create/collaborative?projectId=${encodeURIComponent(projectId)}`}
+              className="mt-4 inline-flex items-center rounded-xl border border-blue-200 bg-white/80 px-4 py-2 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-400 hover:text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200 dark:hover:border-blue-400"
+            >
+              Open collaborative scope builder →
+            </Link>
           </div>
 
           <form onSubmit={handleSubmit} className="px-8 py-10 sm:px-12 space-y-8">
@@ -162,6 +169,6 @@ export default function CreateMilestonesPage() {
           </form>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

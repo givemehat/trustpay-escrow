@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, type ReactNode } from 'react';
 
 export type FileCategory = 'code' | 'image' | 'pdf' | 'archive' | 'document';
 
 export interface FileItem {
+  id?: string;
   path: string;
   size?: number;
   url?: string;
@@ -67,7 +68,7 @@ export function getCategoryBadge(category?: FileCategory): { label: string; colo
 export function parsePathsToTree(files: FileItem[]): FileNode[] {
   const rootNodes: FileNode[] = [];
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     const rawPath = file.path.replace(/\\/g, '/').replace(/^\/+/, '');
     const parts = rawPath.split('/').filter(Boolean);
 
@@ -88,7 +89,7 @@ export function parsePathsToTree(files: FileItem[]): FileNode[] {
         const extension = dotIndex !== -1 ? part.slice(dotIndex + 1) : '';
 
         currentLevel.push({
-          id: accumulatedPath,
+          id: file.id ?? `file:${index}:${accumulatedPath}`,
           name: part,
           path: accumulatedPath,
           size: file.size,
@@ -137,6 +138,7 @@ export interface DeliverableFolderTreeProps {
   files: FileItem[];
   title?: string;
   onDownloadFile?: (file: FileNode) => void;
+  renderFileDetails?: (file: FileNode) => ReactNode;
   className?: string;
 }
 
@@ -144,47 +146,20 @@ export function DeliverableFolderTree({
   files,
   title = 'Deliverable Files Hierarchy',
   onDownloadFile,
+  renderFileDetails,
   className = '',
 }: DeliverableFolderTreeProps) {
   const tree = useMemo(() => parsePathsToTree(files), [files]);
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(() => {
-    // Default: expand all folders initially
-    const initial: Record<string, boolean> = {};
-    function collectFolders(nodes: FileNode[]) {
-      for (const node of nodes) {
-        if (node.isFolder) {
-          initial[node.id] = true;
-          if (node.children) collectFolders(node.children);
-        }
-      }
-    }
-    collectFolders(tree);
-    return initial;
-  });
+  const [defaultExpanded, setDefaultExpanded] = useState(true);
+  const [expandedFolders, setExpandedFolders] = useState(() => new Map<string, boolean>());
 
   const toggleFolder = (id: string) => {
-    setExpandedFolders((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
+    setExpandedFolders((previous) => new Map(previous).set(id, !(previous.get(id) ?? defaultExpanded)));
   };
 
-  const expandAll = () => {
-    const updated: Record<string, boolean> = {};
-    function collect(nodes: FileNode[]) {
-      for (const node of nodes) {
-        if (node.isFolder) {
-          updated[node.id] = true;
-          if (node.children) collect(node.children);
-        }
-      }
-    }
-    collect(tree);
-    setExpandedFolders(updated);
-  };
-
-  const collapseAll = () => {
-    setExpandedFolders({});
+  const setAllFolders = (expanded: boolean) => {
+    setDefaultExpanded(expanded);
+    setExpandedFolders(new Map());
   };
 
   const handleDownload = (file: FileNode) => {
@@ -205,7 +180,7 @@ export function DeliverableFolderTree({
       <ul className="space-y-1">
         {nodes.map((node) => {
           if (node.isFolder) {
-            const isExpanded = !!expandedFolders[node.id];
+            const isExpanded = expandedFolders.get(node.id) ?? defaultExpanded;
             const childCount = node.children?.length || 0;
 
             return (
@@ -213,6 +188,7 @@ export function DeliverableFolderTree({
                 <button
                   type="button"
                   onClick={() => toggleFolder(node.id)}
+                  aria-expanded={isExpanded}
                   data-testid={`folder-toggle-${node.id}`}
                   style={{ paddingLeft: `${depth * 16 + 8}px` }}
                   className="w-full flex items-center justify-between py-1.5 pr-2 rounded-lg text-left text-xs text-[#e4e4e7] hover:bg-[#27272a]/60 hover:text-white transition-colors group"
@@ -220,7 +196,7 @@ export function DeliverableFolderTree({
                   <div className="flex items-center space-x-2 truncate">
                     <span
                       data-testid={`chevron-${node.id}`}
-                      className={`text-[10px] text-[#71717a] transition-transform duration-200 inline-block ${
+                      className={`text-[10px] text-[#71717a] transition-transform duration-200 motion-reduce:transition-none inline-block ${
                         isExpanded ? 'rotate-90' : 'rotate-0'
                       }`}
                     >
@@ -251,29 +227,34 @@ export function DeliverableFolderTree({
               key={node.id}
               data-testid={`file-item-${node.id}`}
               style={{ paddingLeft: `${depth * 16 + 24}px` }}
-              className="flex items-center justify-between py-1.5 pr-2 rounded-lg text-xs hover:bg-[#27272a]/40 transition-colors group"
+              className="py-1.5 pr-2 rounded-lg text-xs hover:bg-[#27272a]/40 transition-colors group"
             >
-              <div className="flex items-center space-x-2 truncate min-w-0">
-                <span className={`text-[9px] font-mono px-1 py-0.5 rounded border uppercase shrink-0 font-bold ${badge.colorClass}`}>
-                  {badge.icon}
-                </span>
-                <span className="text-[#e4e4e7] truncate group-hover:text-white font-mono text-[11px]">{node.name}</span>
-              </div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center space-x-2 truncate min-w-0">
+                  <span className={`text-[9px] font-mono px-1 py-0.5 rounded border uppercase shrink-0 font-bold ${badge.colorClass}`}>
+                    {badge.icon}
+                  </span>
+                  <span className="text-[#e4e4e7] truncate group-hover:text-white font-mono text-[11px]">{node.name}</span>
+                </div>
 
-              <div className="flex items-center space-x-2 shrink-0">
-                {node.size !== undefined && (
-                  <span className="text-[10px] text-[#71717a] font-mono">{formatFileSize(node.size)}</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleDownload(node)}
-                  data-testid={`download-button-${node.id}`}
-                  title={`Download ${node.name}`}
-                  className="px-2 py-0.5 rounded bg-[#232326] hover:bg-blue-600 hover:text-white text-[#a1a1aa] text-[10px] font-semibold border border-[#333338] transition-colors"
-                >
-                  Download
-                </button>
+                <div className="flex items-center space-x-2 shrink-0">
+                  {node.size !== undefined && (
+                    <span className="text-[10px] text-[#71717a] font-mono">{formatFileSize(node.size)}</span>
+                  )}
+                  {(onDownloadFile || node.url) && (
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(node)}
+                      data-testid={`download-button-${node.path}`}
+                      aria-label={`Download ${node.name}`}
+                      className="px-2 py-0.5 rounded bg-[#232326] hover:bg-blue-600 hover:text-white text-[#a1a1aa] text-[10px] font-semibold border border-[#333338] transition-colors"
+                    >
+                      Download
+                    </button>
+                  )}
+                </div>
               </div>
+              {renderFileDetails?.(node)}
             </li>
           );
         })}
@@ -303,7 +284,7 @@ export function DeliverableFolderTree({
         <div className="flex items-center space-x-1.5 text-[11px]">
           <button
             type="button"
-            onClick={expandAll}
+            onClick={() => setAllFolders(true)}
             data-testid="expand-all-btn"
             className="px-2 py-1 rounded bg-[#27272a] hover:bg-[#333338] text-[#a1a1aa] hover:text-white transition-colors"
           >
@@ -311,7 +292,7 @@ export function DeliverableFolderTree({
           </button>
           <button
             type="button"
-            onClick={collapseAll}
+            onClick={() => setAllFolders(false)}
             data-testid="collapse-all-btn"
             className="px-2 py-1 rounded bg-[#27272a] hover:bg-[#333338] text-[#a1a1aa] hover:text-white transition-colors"
           >

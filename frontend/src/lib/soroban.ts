@@ -1,5 +1,6 @@
 import {
   rpc,
+  Account,
   Address,
   nativeToScVal,
   scValToNative,
@@ -10,6 +11,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { signTransaction, isConnected } from '@stellar/freighter-api';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
+import { parseFeeStats, type HorizonFeeStats, type NetworkFees } from '@/lib/fee-estimator';
 
 export const SOROBAN_RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
@@ -35,6 +37,85 @@ export function getSorobanRpcServer(): rpc.Server {
   return new rpc.Server(SOROBAN_RPC_URL, {
     allowHttp: SOROBAN_RPC_URL.startsWith('http://'),
   });
+}
+
+export interface AmmPoolReserveSnapshot {
+  reserveBase: number;
+  reserveQuote: number;
+}
+
+function readReserveAmount(value: unknown): number {
+  if (typeof value === 'bigint') return Number(value);
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+}
+
+export function parseAmmReserves(value: unknown, reserveDecimals = 7): AmmPoolReserveSnapshot {
+  const scale = 10 ** Math.max(0, Number.isFinite(reserveDecimals) ? reserveDecimals : 7);
+  let rawBase: unknown;
+  let rawQuote: unknown;
+
+  if (Array.isArray(value)) {
+    rawBase = value[0];
+    rawQuote = value[1];
+  } else if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    rawBase = record.reserveBase ?? record.reserve_base ?? record.reserveA ?? record.reserve_a ?? record.base ?? record[0];
+    rawQuote = record.reserveQuote ?? record.reserve_quote ?? record.reserveB ?? record.reserve_b ?? record.quote ?? record[1];
+  }
+
+  const reserveBase = readReserveAmount(rawBase) / scale;
+  const reserveQuote = readReserveAmount(rawQuote) / scale;
+  if (reserveBase <= 0 || reserveQuote <= 0) {
+    throw new Error('AMM pool returned invalid reserve values.');
+  }
+  return { reserveBase, reserveQuote };
+}
+
+/**
+ * Simulates a read-only `get_reserves` call against a constant-product AMM pool contract.
+ */
+export async function fetchAmmPoolReserves(options: {
+  contractAddress: string;
+  sourceAccount?: string;
+  reserveDecimals?: number;
+  functionName?: string;
+}): Promise<AmmPoolReserveSnapshot> {
+  const {
+    contractAddress,
+    sourceAccount = DEFAULT_ARBITER_ADDRESS,
+    reserveDecimals = 7,
+    functionName = 'get_reserves',
+  } = options;
+  if (!contractAddress) {
+    throw new Error('No AMM pool contract is configured for this token pair.');
+  }
+
+  const server = getSorobanRpcServer();
+  const account = new Account(sourceAccount, '0');
+  const transaction = new TransactionBuilder(account, {
+    fee: '10000',
+    networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      Operation.invokeContractFunction({
+        contract: contractAddress,
+        function: functionName,
+        args: [],
+      })
+    )
+    .setTimeout(30)
+    .build();
+
+  const simulation = await server.simulateTransaction(transaction);
+  if (rpc.Api.isSimulationError(simulation)) {
+    throw new Error(`AMM pool simulation failed: ${simulation.error}`);
+  }
+  const returnValue = simulation.result?.retval;
+  if (!returnValue) {
+    throw new Error('AMM pool simulation returned no reserve data.');
+  }
+  return parseAmmReserves(scValToNative(returnValue), reserveDecimals);
 }
 
 /**
@@ -83,6 +164,30 @@ export interface SorobanTxResult {
   error?: string;
 }
 
+/** Inclusion fee used when no speed preset has been selected, in stroops. */
+export const DEFAULT_SOROBAN_BASE_FEE = 100000;
+
+let selectedBaseFee: number | null = null;
+
+/**
+ * Sets the inclusion fee (stroops) applied to every Soroban invocation envelope
+ * built by `invokeSorobanMethod`. Pass `null` to go back to the default (#256).
+ */
+export function setSorobanBaseFee(stroops: number | null): void {
+  selectedBaseFee = stroops !== null && Number.isFinite(stroops) && stroops >= 100 ? Math.ceil(stroops) : null;
+}
+
+export function getSorobanBaseFee(): number | null {
+  return selectedBaseFee;
+}
+
+/** Fetches current fee statistics (last 5 ledgers) from Horizon (#256). */
+export async function fetchHorizonFeeStats(horizonUrl: string = HORIZON_URL): Promise<NetworkFees> {
+  const response = await fetch(`${horizonUrl.replace(/\/+$/, '')}/fee_stats`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Horizon fee_stats responded with ${response.status}`);
+  return parseFeeStats((await response.json()) as HorizonFeeStats);
+}
+
 /**
  * Generalized Soroban smart contract invoker:
  * 1. Validates Freighter wallet extension
@@ -98,8 +203,11 @@ export async function invokeSorobanMethod(options: {
   functionName: string;
   args: xdr.ScVal[];
   onStatusUpdate?: TxStatusCallback;
+  /** Inclusion (base) fee in stroops. Defaults to the fee chosen in the gas estimator (#256). */
+  baseFee?: number | string;
 }): Promise<SorobanTxResult> {
   const { callerAddress, functionName, args, onStatusUpdate } = options;
+  const inclusionFee = String(options.baseFee ?? getSorobanBaseFee() ?? DEFAULT_SOROBAN_BASE_FEE);
   const targetContract = options.contractAddress || DEFAULT_ESCROW_CONTRACT_ID;
 
   onStatusUpdate?.('preparing', 'Validating wallet connection and account status...');
@@ -119,7 +227,7 @@ export async function invokeSorobanMethod(options: {
 
   // 3. Build un-simulated Soroban transaction
   const baseTx = new TransactionBuilder(sourceAccount, {
-    fee: '100000',
+    fee: inclusionFee,
     networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
   })
     .addOperation(
@@ -218,6 +326,113 @@ export async function invokeSorobanMethod(options: {
 /**
  * Creates an on-chain escrow project and locks the milestone funds into the Soroban contract.
  */
+export interface CreateProjectArgsParams {
+  clientAddress: string;
+  freelancerAddress?: string;
+  arbiterAddress?: string;
+  tokenAddress?: string;
+  milestoneAmounts: number[];
+  yieldEnabled?: boolean;
+}
+
+/** Parameter names of the escrow contract's `create_project`, in call order. */
+export const CREATE_PROJECT_ARG_NAMES = [
+  'client',
+  'freelancer',
+  'arbiter',
+  'token',
+  'milestone_amounts',
+  'yield_enabled',
+] as const;
+
+/** Escrow amounts are i128 values scaled to 7 decimals (stroops). */
+export const AMOUNT_SCALE = 10_000_000;
+
+/**
+ * Build the ScVal arguments for `create_project`. Shared by the live wallet
+ * flow and the DAO proposal generator so the proposed calldata is exactly what
+ * the app would submit itself.
+ */
+export function buildCreateProjectArgs(params: CreateProjectArgsParams): xdr.ScVal[] {
+  const {
+    clientAddress,
+    freelancerAddress,
+    arbiterAddress = DEFAULT_ARBITER_ADDRESS,
+    tokenAddress = SUPPORTED_TOKENS.USDC.issuerOrContractAddress,
+    milestoneAmounts,
+    yieldEnabled = false,
+  } = params;
+
+  // Build Soroban ScVal vector of milestone amounts (scaled to 7 decimals / 10^7 stroops)
+  const milestoneScVals = milestoneAmounts.map((amt) =>
+    nativeToScVal(BigInt(Math.round(amt * AMOUNT_SCALE)), { type: 'i128' })
+  );
+
+  const freelancerScVal = freelancerAddress
+    ? Address.fromString(freelancerAddress).toScVal()
+    : xdr.ScVal.scvVoid();
+
+  return [
+    Address.fromString(clientAddress).toScVal(),
+    freelancerScVal,
+    Address.fromString(arbiterAddress).toScVal(),
+    Address.fromString(tokenAddress).toScVal(),
+    xdr.ScVal.scvVec(milestoneScVals),
+    nativeToScVal(Boolean(yieldEnabled), { type: 'bool' }),
+  ];
+}
+
+export interface EncodedInvocationArg {
+  name: string;
+  /** Human-readable value (addresses, decimal amounts). */
+  value: string;
+  /** Base64 XDR of the ScVal. */
+  xdr: string;
+}
+
+export interface SorobanInvocationPayload {
+  contractId: string;
+  functionName: string;
+  args: EncodedInvocationArg[];
+  /** Base64 XDR of the InvokeContract host function, ready for a governance executor. */
+  hostFunctionXdr: string;
+}
+
+/**
+ * Encode a `create_project` invocation as governance-ready calldata: each
+ * argument as base64 ScVal XDR, plus the complete InvokeContract host function.
+ * Pure: it never touches the network or a wallet.
+ */
+export function encodeCreateProjectInvocation(
+  params: CreateProjectArgsParams & { contractAddress?: string }
+): SorobanInvocationPayload {
+  const contractId = params.contractAddress || DEFAULT_ESCROW_CONTRACT_ID;
+  const args = buildCreateProjectArgs(params);
+  const values = [
+    params.clientAddress,
+    params.freelancerAddress || 'None',
+    params.arbiterAddress || DEFAULT_ARBITER_ADDRESS,
+    params.tokenAddress || SUPPORTED_TOKENS.USDC.issuerOrContractAddress,
+    `[${params.milestoneAmounts.join(', ')}]`,
+    String(Boolean(params.yieldEnabled)),
+  ];
+  const invokeArgs = new xdr.InvokeContractArgs({
+    contractAddress: Address.fromString(contractId).toScAddress(),
+    functionName: 'create_project',
+    args,
+  });
+  return {
+    contractId,
+    functionName: 'create_project',
+    args: args.map((arg, i) => ({
+      name: CREATE_PROJECT_ARG_NAMES[i],
+      value: values[i],
+      xdr: arg.toXDR('base64'),
+    })),
+    hostFunctionXdr: xdr.HostFunction.hostFunctionTypeInvokeContract(invokeArgs).toXDR('base64'),
+  };
+}
+
 export async function createProjectOnChain(params: {
   clientAddress: string;
   freelancerAddress?: string;
@@ -228,34 +443,9 @@ export async function createProjectOnChain(params: {
   contractAddress?: string;
   onStatusUpdate?: TxStatusCallback;
 }): Promise<{ success: boolean; txHash: string; onChainProjectId: number | bigint }> {
-  const {
-    clientAddress,
-    freelancerAddress,
-    arbiterAddress = DEFAULT_ARBITER_ADDRESS,
-    tokenAddress = SUPPORTED_TOKENS.USDC.issuerOrContractAddress,
-    milestoneAmounts,
-    yieldEnabled = false,
-    contractAddress,
-    onStatusUpdate,
-  } = params;
+  const { clientAddress, contractAddress, onStatusUpdate } = params;
 
-  // Build Soroban ScVal vector of milestone amounts (scaled to 7 decimals / 10^7 stroops)
-  const milestoneScVals = milestoneAmounts.map((amt) =>
-    nativeToScVal(BigInt(Math.round(amt * 10_000_000)), { type: 'i128' })
-  );
-
-  const freelancerScVal = freelancerAddress
-    ? Address.fromString(freelancerAddress).toScVal()
-    : xdr.ScVal.scvVoid();
-
-  const args: xdr.ScVal[] = [
-    Address.fromString(clientAddress).toScVal(),
-    freelancerScVal,
-    Address.fromString(arbiterAddress).toScVal(),
-    Address.fromString(tokenAddress).toScVal(),
-    xdr.ScVal.scvVec(milestoneScVals),
-    nativeToScVal(Boolean(yieldEnabled), { type: 'bool' }),
-  ];
+  const args = buildCreateProjectArgs(params);
 
   const result = await invokeSorobanMethod({
     callerAddress: clientAddress,
@@ -669,6 +859,99 @@ export async function autoReleaseMilestoneOnChain(params: {
   });
 }
 
+/**
+ * Executes a mutual (non-dispute) project cancellation once both client and
+ * freelancer have agreed on a refund split. Broadcasts `mutual_cancel`.
+ */
+export async function mutualCancelOnChain(params: {
+  callerAddress: string;
+  projectIdOnChain: number | bigint | string;
+  clientRefundAmount: number;
+  freelancerCompensation: number;
+  contractAddress?: string;
+  onStatusUpdate?: TxStatusCallback;
+}): Promise<SorobanTxResult> {
+  const {
+    callerAddress,
+    projectIdOnChain,
+    clientRefundAmount,
+    freelancerCompensation,
+    contractAddress,
+    onStatusUpdate,
+  } = params;
+
+  const args: xdr.ScVal[] = [
+    Address.fromString(callerAddress).toScVal(),
+    nativeToScVal(BigInt(projectIdOnChain), { type: 'u64' }),
+    nativeToScVal(BigInt(Math.round(clientRefundAmount * 10_000_000)), { type: 'i128' }),
+    nativeToScVal(BigInt(Math.round(freelancerCompensation * 10_000_000)), { type: 'i128' }),
+  ];
+
+  return invokeSorobanMethod({
+    callerAddress,
+    contractAddress,
+    functionName: 'mutual_cancel',
+    args,
+    onStatusUpdate,
+  });
+}
+
+/**
+ * Verified open-source repository hosting the audited Soroban contract source.
+ */
+export const OFFICIAL_CONTRACT_REPO_URL =
+  'https://github.com/trustpay-escrow/trustpay-escrow/tree/main/contracts';
+
+/**
+ * Expected SHA-256 (WASM hash) of the official release build artifact.
+ * Configure via NEXT_PUBLIC_ESCROW_WASM_SHA256 once a release is published.
+ */
+export const EXPECTED_WASM_SHA256 = (
+  process.env.NEXT_PUBLIC_ESCROW_WASM_SHA256 || ''
+).toLowerCase();
+
+function xdrBufferToHex(buf: Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Queries the Soroban RPC for the deployed contract instance's WASM bytecode
+ * hash (the SHA-256 digest of the compiled contract WASM) via ledger entries.
+ */
+export async function getContractWasmHash(
+  contractAddress: string = DEFAULT_ESCROW_CONTRACT_ID
+): Promise<string> {
+  const server = getSorobanRpcServer();
+
+  const result = await server.getContractData(
+    contractAddress,
+    xdr.ScVal.scvSymbol('ContractInstance'),
+    rpc.Durability.Persistent
+  );
+
+  const data = result.val;
+  if (data.switch().name !== 'contractData') {
+    throw new Error('Contract instance ledger entry not found.');
+  }
+
+  const instanceVal = data.contractData().val();
+  if (instanceVal.switch().name !== 'scvContractInstance') {
+    throw new Error('Contract has no instance data on ledger.');
+  }
+
+  const executable = instanceVal.instance().executable();
+  if (executable.switch().name !== 'contractExecutableWasm') {
+    throw new Error('Contract executable is not an inline WASM hash.');
+  }
+
+  return xdrBufferToHex(executable.wasmHash());
+}
+
+import { decodeSorobanError, DecodedSorobanError } from './soroban-error-decoder';
+import { showSorobanErrorToast } from '@/components/SorobanErrorToast';
 export type FeeSpeedTier = 'standard' | 'fast' | 'urgent';
 
 export interface FeeTierDetails {
