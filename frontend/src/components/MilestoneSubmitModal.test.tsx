@@ -44,6 +44,42 @@ describe('MilestoneSubmitModal', () => {
     expect(screen.getByTestId('submit-deliverable')).toBeInTheDocument();
   });
 
+  it('preserves nested folder paths and offers downloads for non-image files', async () => {
+    const createUrl = vi.fn(() => 'blob:deliverable');
+    const revokeUrl = vi.fn();
+    const NativeUrl = URL;
+    vi.stubGlobal('URL', class extends NativeUrl {
+      static createObjectURL = createUrl;
+      static revokeObjectURL = revokeUrl;
+    });
+    const file = new File(['hello'], 'main.ts', { type: 'text/plain' });
+    Object.defineProperty(file, 'webkitRelativePath', { value: 'deliverable/src/main.ts' });
+
+    const { unmount } = render(<MilestoneSubmitModal isOpen onClose={vi.fn()} project={project} milestone={milestone} />);
+    fireEvent.change(screen.getByLabelText('Browse Folder'), { target: { files: [file] } });
+    expect(screen.getByTestId('folder-toggle-deliverable/src')).toHaveAttribute('aria-expanded', 'true');
+    const download = screen.getByTestId('download-button-deliverable/src/main.ts');
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.href).toBe('blob:deliverable');
+      expect(this.download).toBe('main.ts');
+    });
+    fireEvent.click(download);
+    expect(click).toHaveBeenCalledOnce();
+    click.mockRestore();
+    await screen.findByText('Ready');
+    unmount();
+    expect(revokeUrl).toHaveBeenCalledWith('blob:deliverable');
+  });
+
+  it('calls onClose once when Escape is pressed', () => {
+    const onClose = vi.fn();
+    render(<MilestoneSubmitModal isOpen onClose={onClose} project={project} milestone={milestone} />);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects invalid GitHub PR links before adding them', async () => {
     render(<MilestoneSubmitModal isOpen onClose={vi.fn()} project={project} milestone={milestone} />);
     const input = screen.getByTestId('pr-url-input');
@@ -73,5 +109,36 @@ describe('MilestoneSubmitModal', () => {
       'https://api.github.com/repos/owner/repo/pulls/130',
       expect.objectContaining({ headers: expect.any(Object) })
     );
+  });
+
+  it('disables submit button by default until notes meet schema requirement and shows real-time error', () => {
+    render(<MilestoneSubmitModal isOpen onClose={vi.fn()} project={project} milestone={milestone} />);
+    const submitBtn = screen.getByTestId('submit-deliverable');
+    expect(submitBtn).toBeDisabled();
+
+    // Type invalid short notes into markdown editor textarea
+    const textarea = screen.getByTestId('markdown-editor');
+    fireEvent.change(textarea, { target: { value: 'Short text' } });
+
+    expect(screen.getByTestId('notes-validation-error')).toBeInTheDocument();
+    expect(submitBtn).toBeDisabled();
+
+    // Type notes with >= 20 characters
+    fireEvent.change(textarea, {
+      target: { value: 'This is a comprehensive summary of milestone deliverables.' },
+    });
+    expect(screen.queryByTestId('notes-validation-error')).not.toBeInTheDocument();
+    expect(submitBtn).not.toBeDisabled();
+  });
+
+  it('displays real-time inline validation error for invalid PR URL', () => {
+    render(<MilestoneSubmitModal isOpen onClose={vi.fn()} project={project} milestone={milestone} />);
+    const input = screen.getByTestId('pr-url-input');
+
+    fireEvent.change(input, { target: { value: 'not-a-valid-pr-link' } });
+    expect(screen.getByTestId('pr-url-error')).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'https://github.com/owner/repo/pull/42' } });
+    expect(screen.queryByTestId('pr-url-error')).not.toBeInTheDocument();
   });
 });

@@ -1,16 +1,11 @@
+import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import '@testing-library/jest-dom/vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { AddressBadge } from './AddressBadge';
 import { soundSynthesizer } from '@/lib/sound-effects';
 
-describe('AddressBadge Component', () => {
-  const TEST_ADDRESS = 'GAUBK6P5Z7I7ZXZZ6D7XQWJ7M2U3H7T5W7O6X7Y8Z9A1B2C3D4E5F6G7';
-  const TEST_HASH = 'c3ee8701982bdf10c47d5b703a890123456789abcdef0123456789abcdef';
-
+describe('address copy feedback', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    vi.spyOn(soundSynthesizer, 'playTick').mockImplementation(() => {});
     Object.assign(navigator, {
       clipboard: {
         writeText: vi.fn().mockResolvedValue(undefined),
@@ -19,105 +14,114 @@ describe('AddressBadge Component', () => {
   });
 
   afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('renders the address with shared monospace styling', () => {
-    render(<AddressBadge value={TEST_ADDRESS} />);
-    const el = screen.getByText(TEST_ADDRESS);
-    expect(el).toBeInTheDocument();
-    expect(el).toHaveAttribute('data-crypto-id');
-    expect(screen.getByTestId('copy-icon')).toBeInTheDocument();
-  });
-
-  it('truncates address when head and tail are provided', () => {
-    render(<AddressBadge value={TEST_ADDRESS} head={6} tail={4} />);
-    expect(screen.getByText('GAUBK6...F6G7')).toBeInTheDocument();
-  });
-
-  it('applies expanding circular ripple animation class on click event', async () => {
-    render(<AddressBadge value={TEST_HASH} />);
-    const badge = screen.getByRole('button');
-
-    expect(screen.queryByTestId('ripple-wave')).not.toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(badge, { clientX: 25, clientY: 15 });
-    });
-
-    const ripple = screen.getByTestId('ripple-wave');
-    expect(ripple).toBeInTheDocument();
-    expect(ripple).toHaveClass('animate-ripple', 'ripple');
-  });
-
-  it('triggers audio tick tone without throwing errors on click event', async () => {
-    const playTickSpy = vi.spyOn(soundSynthesizer, 'playTick');
-
-    render(<AddressBadge value={TEST_HASH} enableAudio={true} />);
-    const badge = screen.getByRole('button');
-
-    await act(async () => {
-      fireEvent.click(badge);
-    });
-
-    expect(playTickSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not play audio tone when enableAudio is false', async () => {
-    const playTickSpy = vi.spyOn(soundSynthesizer, 'playTick');
-
-    render(<AddressBadge value={TEST_HASH} enableAudio={false} />);
-    const badge = screen.getByRole('button');
-
-    await act(async () => {
-      fireEvent.click(badge);
-    });
-
-    expect(playTickSpy).not.toHaveBeenCalled();
-  });
-
-  it('transitions copy icon to green checkmark for 1.5 seconds then resets', async () => {
+  it('ripples from the click and shows a checkmark for 1.5 seconds', async () => {
     vi.useFakeTimers();
-
-    render(<AddressBadge value={TEST_ADDRESS} />);
-    const badge = screen.getByRole('button');
-
-    expect(screen.getByTestId('copy-icon')).toBeInTheDocument();
-    expect(screen.queryByTestId('checkmark-icon')).not.toBeInTheDocument();
-
+    const playTick = vi.spyOn(soundSynthesizer, 'playCopyTick').mockResolvedValue();
+    const { container } = render(<AddressBadge value="full-hash" label="Copy Transaction Hash" />);
+    const button = screen.getByRole('button', { name: 'Copy Transaction Hash' });
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 20, 32, 28));
     await act(async () => {
-      fireEvent.click(badge);
+      fireEvent.click(button, { detail: 1, clientX: 17, clientY: 30 });
     });
 
-    expect(screen.queryByTestId('copy-icon')).not.toBeInTheDocument();
-    expect(screen.getByTestId('checkmark-icon')).toBeInTheDocument();
-    expect(badge).toHaveAttribute('aria-label', 'Address copied to clipboard');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('full-hash');
+    expect(container.querySelector('.copy-ripple')).toHaveStyle({ left: '7px', top: '10px' });
+    expect(container.querySelector('svg')).toHaveClass('text-emerald-400');
+    expect(playTick).toHaveBeenCalledOnce();
 
-    // Fast-forward 1.4s (still showing checkmark)
-    act(() => {
-      vi.advanceTimersByTime(1400);
+    act(() => vi.advanceTimersByTime(1499));
+    expect(screen.getByRole('status')).toHaveTextContent('Copied');
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('plays a short tone with Web Audio and honors the mute preference', async () => {
+    const oscillator = { frequency: { setValueAtTime: vi.fn() }, connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+    const gain = { gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() }, connect: vi.fn() };
+    const { SoundSynthesizer } = await import('@/lib/sound-effects');
+    vi.stubGlobal('AudioContext', class {
+      state = 'running';
+      currentTime = 0;
+      destination = {};
+      createOscillator = () => oscillator;
+      createGain = () => gain;
     });
-    expect(screen.getByTestId('checkmark-icon')).toBeInTheDocument();
+    const synth = new SoundSynthesizer();
+    try {
+      await expect(synth.playCopyTick()).resolves.toBeUndefined();
+      expect(oscillator.stop).toHaveBeenCalledWith(0.055);
+      localStorage.setItem('notification_sounds_muted', 'true');
+      await synth.playCopyTick();
+      expect(oscillator.start).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+      localStorage.removeItem('notification_sounds_muted');
+    }
+  });
+});
 
-    // Fast-forward past 1.5s
-    act(() => {
-      vi.advanceTimersByTime(200);
+describe('AddressBadge Component', () => {
+  const fullAddress = 'GAUBK6P5Z7I7ZXZZ6D7XQWJ7M2U3H7T5W7O6X7Y8Z9A1B2C3D4E5F6G7';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
     });
-    expect(screen.getByTestId('copy-icon')).toBeInTheDocument();
-    expect(screen.queryByTestId('checkmark-icon')).not.toBeInTheDocument();
+  });
 
+  afterEach(() => {
+    cleanup();
     vi.useRealTimers();
   });
 
-  it('calls onCopy callback and writes to clipboard', async () => {
-    const onCopyMock = vi.fn();
-    render(<AddressBadge value={TEST_ADDRESS} onCopy={onCopyMock} />);
+  it('renders truncated address correctly', () => {
+    render(<AddressBadge address={fullAddress} truncateStart={4} truncateEnd={4} />);
+    expect(screen.getByText('GAUB...F6G7')).toBeInTheDocument();
+  });
 
+  it('copies full un-truncated address to clipboard and shows tooltip for 2000ms', async () => {
+    render(<AddressBadge address={fullAddress} />);
+    const copyButton = screen.getByTestId('address-copy-button');
+
+    // Click to copy
     await act(async () => {
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(copyButton);
     });
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(TEST_ADDRESS);
-    expect(onCopyMock).toHaveBeenCalledWith(TEST_ADDRESS);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(fullAddress);
+    expect(screen.getByTestId('copy-tooltip')).toBeInTheDocument();
+    expect(screen.getByText('Copied to Clipboard!')).toBeInTheDocument();
+
+    // Advance 1999ms -> tooltip still visible
+    act(() => {
+      vi.advanceTimersByTime(1999);
+    });
+    expect(screen.getByTestId('copy-tooltip')).toBeInTheDocument();
+
+    // Advance to 2000ms -> tooltip disappears
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByTestId('copy-tooltip')).not.toBeInTheDocument();
+  });
+
+  it('renders Stellar Expert link opening in new tab', () => {
+    render(<AddressBadge address={fullAddress} network="testnet" showExplorerLink={true} />);
+    const link = screen.getByTestId('stellar-expert-link');
+
+    expect(link).toHaveAttribute(
+      'href',
+      `https://stellar.expert/explorer/testnet/account/${fullAddress}`
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });

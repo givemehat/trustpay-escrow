@@ -1,162 +1,193 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { CryptoId, CryptoIdSize } from '@/components/ui/CryptoId';
+import React, { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { soundSynthesizer } from '@/lib/sound-effects';
 
 export interface AddressBadgeProps {
-  /** The full address, contract ID or transaction hash */
-  value: string;
-  /** Starting characters to display if truncating */
-  head?: number;
-  /** Ending characters to display if truncating */
-  tail?: number;
-  /** Size variant ('xs' | 'sm') */
-  size?: CryptoIdSize;
-  /** Whether to play subtle audio tick feedback on copy (defaults to true) */
-  enableAudio?: boolean;
-  /** Optional container class name */
+  address?: string;
+  value?: string;
+  label?: string;
+  network?: 'testnet' | 'public';
+  truncateStart?: number;
+  truncateEnd?: number;
+  showExplorerLink?: boolean;
   className?: string;
-  /** Optional crypto typography class name */
-  cryptoClassName?: string;
-  /** Optional custom title tooltip */
-  title?: string;
-  /** Callback fired after copy action */
-  onCopy?: (value: string) => void;
-  /** Optional prefix node */
-  prefix?: React.ReactNode;
-}
-
-interface RipplePoint {
-  id: number;
-  x: number;
-  y: number;
 }
 
 export function AddressBadge({
+  address,
   value,
-  head,
-  tail,
-  size = 'xs',
-  enableAudio = true,
+  label,
+  network = 'testnet',
+  truncateStart = 4,
+  truncateEnd = 4,
+  showExplorerLink = false,
   className = '',
-  cryptoClassName = '',
-  title,
-  onCopy,
-  prefix,
 }: AddressBadgeProps) {
-  const [copied, setCopied] = useState(false);
-  const [ripples, setRipples] = useState<RipplePoint[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const targetValue = value ?? address ?? '';
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-    };
+  // Mode 1: Icon button with ripple, label, and sound effect (used when `label` is explicitly provided)
+  const [ripple, setRipple] = useState<{ x: number; y: number; size: number; id: number }>();
+  const [iconCopied, setIconCopied] = useState(false);
+  const iconTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const sequence = useRef(0);
+
+  // Mode 2: Chip with truncated address, tooltip, and explorer link
+  const [chipCopied, setChipCopied] = useState(false);
+  const chipTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => {
+    clearTimeout(iconTimeout.current);
+    clearTimeout(chipTimeout.current);
+    sequence.current += 1;
   }, []);
 
-  const handleCopy = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    // 1. Calculate click coordinates relative to button for expanding circular ripple
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const newRipple: RipplePoint = { id: Date.now() + Math.random(), x, y };
+  const handleIconCopy = async (event: MouseEvent<HTMLButtonElement>) => {
+    const { left, top, width, height } = event.currentTarget.getBoundingClientRect();
+    const x = event.detail ? event.clientX - left : width / 2;
+    const y = event.detail ? event.clientY - top : height / 2;
+    const size = 2 * Math.hypot(Math.max(x, width - x), Math.max(y, height - y));
+    const id = ++sequence.current;
 
-    setRipples((prev) => [...prev, newRipple]);
-    setTimeout(() => {
-      setRipples((prev) => prev.filter((r) => r.id !== newRipple.id));
-    }, 600);
-
-    // 2. Play subtle soft audio tick tone if audio feedback is enabled
-    if (enableAudio) {
-      try {
-        soundSynthesizer.playTick();
-      } catch (err) {
-        console.debug('Failed to play copy audio tick:', err);
-      }
-    }
-
-    // 3. Copy to clipboard
     try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value);
-      }
-    } catch (err) {
-      console.debug('Failed to write to clipboard:', err);
+      await navigator.clipboard.writeText(targetValue);
+    } catch {
+      return;
     }
+    if (id !== sequence.current) return;
 
-    // 4. Transition copy icon to green checkmark for 1.5 seconds
-    setCopied(true);
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-    timerRef.current = setTimeout(() => {
-      setCopied(false);
+    setIconCopied(true);
+    setRipple({ x, y, size, id });
+    soundSynthesizer.playCopyTick();
+    clearTimeout(iconTimeout.current);
+    iconTimeout.current = setTimeout(() => {
+      setIconCopied(false);
+      setRipple(undefined);
     }, 1500);
-
-    onCopy?.(value);
   };
 
+  const handleChipCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(targetValue);
+      }
+      setChipCopied(true);
+      clearTimeout(chipTimeout.current);
+      chipTimeout.current = setTimeout(() => {
+        setChipCopied(false);
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy address:', err);
+    }
+  };
+
+  if (label) {
+    return (
+      <button
+        type="button"
+        onClick={handleIconCopy}
+        title={label}
+        aria-label={label}
+        className={`relative inline-flex h-7 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-slate-800 text-slate-200 hover:bg-slate-700 ${className}`}
+      >
+        {ripple && (
+          <span
+            key={ripple.id}
+            aria-hidden="true"
+            className="copy-ripple"
+            style={{ left: ripple.x, top: ripple.y, width: ripple.size, height: ripple.size }}
+          />
+        )}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className={`h-4 w-4 ${iconCopied ? 'text-emerald-400' : ''}`}
+        >
+          {iconCopied ? (
+            <path d="m5 12 4 4L19 6" />
+          ) : (
+            <>
+              <rect x="8" y="8" width="12" height="12" rx="2" />
+              <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+            </>
+          )}
+        </svg>
+        <span role="status" className="sr-only">
+          {iconCopied && 'Copied'}
+        </span>
+      </button>
+    );
+  }
+
+  if (!targetValue) return null;
+
+  const truncated =
+    targetValue.length > truncateStart + truncateEnd
+      ? `${targetValue.slice(0, truncateStart)}...${targetValue.slice(-truncateEnd)}`
+      : targetValue;
+
+  const explorerUrl = `https://stellar.expert/explorer/${network}/account/${targetValue}`;
+
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      title={title || (copied ? 'Copied to clipboard!' : `Click to copy: ${value}`)}
-      aria-label={copied ? 'Address copied to clipboard' : `Copy address ${value}`}
-      className={`group relative inline-flex items-center gap-1.5 overflow-hidden rounded-lg border px-2.5 py-1 text-xs transition-colors duration-150 select-none ${
-        copied
-          ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-          : 'border-zinc-800 bg-zinc-900/80 hover:border-zinc-700 hover:bg-zinc-800/90 text-zinc-300'
-      } ${className}`.trim()}
+    <div
+      data-testid="address-badge-container"
+      className={`inline-flex items-center gap-1.5 relative ${className}`}
     >
-      {/* Ripple wave animations expanding from click origin */}
-      {ripples.map((ripple) => (
-        <span
-          key={ripple.id}
-          data-testid="ripple-wave"
-          className="animate-ripple ripple pointer-events-none absolute w-24 h-24 rounded-full bg-blue-500/30"
-          style={{
-            left: `${ripple.x}px`,
-            top: `${ripple.y}px`,
-          }}
-        />
-      ))}
+      {chipCopied && (
+        <div
+          role="status"
+          data-testid="copy-tooltip"
+          className="absolute -top-8 left-1/2 -translate-x-1/2 px-2.5 py-1 bg-emerald-600 text-white text-[11px] font-bold rounded-lg shadow-lg shadow-emerald-900/50 whitespace-nowrap z-50 animate-in fade-in slide-in-from-bottom-1 duration-200 flex items-center gap-1"
+        >
+          <span>✓</span>
+          <span>Copied to Clipboard!</span>
+        </div>
+      )}
 
-      {prefix}
+      <button
+        type="button"
+        onClick={handleChipCopy}
+        data-testid="address-copy-button"
+        title="Click to copy full Stellar address"
+        className="inline-flex items-center gap-1.5 bg-[#232326] hover:bg-[#2c2c31] active:scale-95 text-[#e4e4e7] hover:text-white px-2.5 py-1 rounded-xl border border-[#3f3f46] text-xs font-mono font-semibold transition-all cursor-pointer group"
+      >
+        <span>{truncated}</span>
+        <span className="text-[#a1a1aa] group-hover:text-white transition-colors text-[11px]">
+          {chipCopied ? '✓' : '📋'}
+        </span>
+      </button>
 
-      <CryptoId value={value} head={head} tail={tail} size={size} className={cryptoClassName} />
-
-      {/* Copy / Checkmark Icon */}
-      <span className="relative z-10 inline-flex items-center ml-0.5" aria-hidden="true">
-        {copied ? (
+      {showExplorerLink && (
+        <a
+          href={explorerUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="stellar-expert-link"
+          title="View account on Stellar Expert"
+          className="p-1 rounded-lg bg-[#232326] hover:bg-[#2c2c31] text-[#a1a1aa] hover:text-blue-400 border border-[#3f3f46] transition-colors inline-flex items-center justify-center text-xs"
+        >
           <svg
-            data-testid="checkmark-icon"
+            className="w-3.5 h-3.5"
             xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            className="w-3.5 h-3.5 text-emerald-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
           >
             <path
-              fillRule="evenodd"
-              d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z"
-              clipRule="evenodd"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14"
             />
           </svg>
-        ) : (
-          <svg
-            data-testid="copy-icon"
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            className="w-3.5 h-3.5 text-zinc-400 group-hover:text-zinc-200 transition-colors"
-          >
-            <path d="M7 3.5A1.5 1.5 0 0 1 8.5 2h3.879a1.5 1.5 0 0 1 1.06.44l3.122 3.12a1.5 1.5 0 0 1 .439 1.061V16.5A1.5 1.5 0 0 1 15.5 18h-7A1.5 1.5 0 0 1 7 16.5v-13Z" />
-            <path d="M5.5 5A1.5 1.5 0 0 0 4 6.5v11A1.5 1.5 0 0 0 5.5 19h7a1.5 1.5 0 0 0 1.5-1.5V17H6.5A1.5 1.5 0 0 1 5 15.5V5h.5Z" />
-          </svg>
-        )}
-      </span>
-    </button>
+        </a>
+      )}
+    </div>
   );
 }
+
+export default AddressBadge;
