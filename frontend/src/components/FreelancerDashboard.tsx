@@ -1,11 +1,15 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import NumberRoll from './NumberRoll';
 import { toast } from 'sonner';
+import { Pagination } from './Pagination';
+import { getPagination } from '@/lib/pagination';
 import { useRouter } from 'next/navigation';
-import { useWalletStore } from '@/store/walletStore';
+import { useWalletStore, canSubmitProposal, canRaiseDispute } from '@/store/walletStore';
+import { raiseDisputeOnChain } from '@/lib/soroban';
 import { authFetch } from '@/lib/api';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
 
 import { Milestone, Project, Proposal } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
@@ -13,13 +17,25 @@ import { MilestoneSubmitModal } from './MilestoneSubmitModal';
 import { ProjectChatModal } from './ProjectChatModal';
 import { ProjectCardSkeletonList, ProposalSkeletonList } from '@/components/skeletons';
 import { DownloadReceiptButton } from '@/components/DownloadReceiptButton';
+import { MilestoneCertificateButton } from '@/components/MilestoneCertificateButton';
+import { ShareMilestoneButton } from '@/components/ShareableMilestoneCard';
 import { ProjectFilterBar } from '@/components/ProjectFilterBar';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { usePersistentTab, usePersistentFilter } from '@/hooks/usePersistentTab';
+import { triggerCelebrationConfetti } from '@/lib/confetti';
+import { ProjectActionsDropdown } from '@/components/ProjectActionsDropdown';
+import { ConfirmModal } from '@/components/ConfirmModal';
+import { CurrencyConverterWidget } from '@/components/CurrencyConverterWidget';
+import {
+  CounterOfferSummary,
+  ProposalCounterOfferModal,
+} from '@/components/ProposalCounterOfferModal';
+import type { CounterOffer } from '@/lib/counter-offer';
+import { TaxExportModal } from '@/components/TaxExportModal';
 
 export function FreelancerDashboard() {
   const router = useRouter();
-  const { address } = useWalletStore();
+  const { address, activeRole } = useWalletStore();
   const [activeTab, setActiveTab] = usePersistentTab<'explore' | 'proposals' | 'jobs'>({
     key: 'freelancer_active_tab',
     defaultTab: 'explore',
@@ -27,9 +43,52 @@ export function FreelancerDashboard() {
     walletAddress: address,
   });
   const [loading, setLoading] = useState(true);
+  const [showTaxExport, setShowTaxExport] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; name?: string } | null>(null);
+
+  // Dispute confirmation (ConfirmModal)
+  const [disputeTarget, setDisputeTarget] = useState<Project | null>(null);
+
+  const getDisputeBlockReason = (proj: Project): string | undefined => {
+    if (proj.project_id_onchain === undefined || proj.project_id_onchain === null) {
+      return 'No on-chain escrow to dispute yet';
+    }
+    if (proj.status === 'disputed') return 'A dispute is already open';
+    if (proj.status === 'completed') return 'Completed projects cannot be disputed';
+    if (!canRaiseDispute(proj, address)) return 'Only the client or assigned freelancer can raise a dispute';
+    return undefined;
+  };
+
+  const handleConfirmDispute = async () => {
+    if (!disputeTarget) return;
+    if (!address) {
+      toast.error('Please connect your wallet first.');
+      return;
+    }
+    try {
+      await raiseDisputeOnChain({
+        callerAddress: address,
+        projectIdOnChain: disputeTarget.project_id_onchain as number | string | bigint,
+      });
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await authFetch(`${apiUrl}/api/projects/${disputeTarget.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'disputed' }),
+      });
+      toast.warning('Dispute raised! Funds are frozen until an arbiter rules.');
+      setDisputeTarget(null);
+      fetchBackendProjects();
+    } catch (err: any) {
+      toast.error(`Dispute failed: ${err?.message || err}`);
+    }
+  };
+
+  // Counter-offer renegotiation (#150)
+  const [reCounterTarget, setReCounterTarget] = useState<Proposal | null>(null);
+  const [counterOfferSubmitting, setCounterOfferSubmitting] = useState(false);
 
   // Chat Modal State
   const [chatModalState, setChatModalState] = useState<{
@@ -67,11 +126,18 @@ export function FreelancerDashboard() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const listRef = useRef<HTMLDivElement>(null);
+  const projectRequest = useRef(0);
   const [totalProjects, setTotalProjects] = useState(0);
 
   // Open Apply Modal and pre-fill wallet address
   const handleOpenApplyModal = (proj: Project) => {
+    const check = canSubmitProposal(proj, address, activeRole);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You cannot apply to your own escrow');
+      return;
+    }
     setSelectedProject(proj);
     setProposalWalletAddress(address || '');
     setProposalCoverNote('');
@@ -106,6 +172,22 @@ export function FreelancerDashboard() {
 
   // Helper to render action button or status badge for a project
   const renderProjectActionBadge = (proj: Project, isModal = false) => {
+    const clientAddr = proj.client_address || (proj as any).client?.stellar_address || (proj as any).client;
+    const isOwnProject = Boolean(clientAddr && address && clientAddr.toLowerCase() === address.toLowerCase());
+    if (isOwnProject) {
+      return (
+        <span
+          data-testid="own-project-badge"
+          className={
+            isModal
+              ? "px-5 py-2.5 bg-[#27272a] text-[#a1a1aa] border border-[#3f3f46] text-xs font-semibold rounded-xl flex items-center gap-1.5 shadow-md cursor-not-allowed"
+              : "px-3.5 py-1.5 bg-[#27272a] text-[#a1a1aa] border border-[#3f3f46] text-xs font-semibold rounded-xl flex items-center gap-1 cursor-not-allowed"
+          }
+        >
+          <span>Owner (Client)</span>
+        </span>
+      );
+    }
     const existingProposal = proposals.find((p) => p.project_id === proj.id) ||
       (proj.applicants || []).find((a: any) => a.stellar_address === address || a.freelancer_address === address) ||
       (proj.proposals || []).find((p: any) => p.freelancer_address === address || p.stellar_address === address);
@@ -133,7 +215,15 @@ export function FreelancerDashboard() {
             >
               <span>💬 Chat with Client</span>
             </button>
+            {proj.milestones?.some((milestone) => milestone.status === 'approved') && (
+              <MilestoneCertificateButton
+                project={proj}
+                milestone={proj.milestones?.find((milestone) => milestone.status === 'approved')}
+                txHash={proj.tx_hash}
+              />
+            )}
             <DownloadReceiptButton project={proj} />
+            <ShareMilestoneButton project={proj} />
             <span className={isModal 
               ? "px-5 py-2.5 bg-[#052e16] text-[#22c55e] border border-[#14532d] text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-md"
               : "px-3.5 py-1.5 bg-[#052e16] text-[#22c55e] border border-[#14532d] text-xs font-bold rounded-xl flex items-center gap-1"
@@ -213,13 +303,20 @@ export function FreelancerDashboard() {
   };
 
   // Fetch real projects from backend
-  const fetchBackendProjects = async (pageToFetch = currentPage) => {
+  const fetchBackendProjects = async (pageToFetch = currentPage, size = pageSize) => {
+    const requestId = ++projectRequest.current;
     setLoading(true);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-      const res = await fetch(`${apiUrl}/api/projects?page=${pageToFetch}&limit=6`);
+      const res = await fetch(`${apiUrl}/api/projects?page=${pageToFetch}&limit=${size}`);
       if (res.ok) {
         const data = await res.json();
+        if (requestId !== projectRequest.current) return;
+        const nextPage = getPagination(data.pagination?.totalProjects ?? 0, pageToFetch, size).page;
+        if (data.pagination && nextPage !== pageToFetch) {
+          await fetchBackendProjects(nextPage, size);
+          return;
+        }
         if (data.projects && Array.isArray(data.projects)) {
           const mapped: Project[] = data.projects.map((p: any) => ({
             id: p.id,
@@ -253,14 +350,14 @@ export function FreelancerDashboard() {
         }
         if (data.pagination) {
           setCurrentPage(data.pagination.page);
-          setTotalPages(data.pagination.totalPages);
+          setPageSize(size);
           setTotalProjects(data.pagination.totalProjects);
         }
       }
     } catch (err) {
-      toast.error('Could not load projects from backend');
+      if (requestId === projectRequest.current) toast.error('Could not load projects from backend');
     } finally {
-      setLoading(false);
+      if (requestId === projectRequest.current) setLoading(false);
     }
   };
 
@@ -284,6 +381,8 @@ export function FreelancerDashboard() {
             budget: Number(p.projects?.budget) || 0,
             status: p.status || 'pending',
             created_at: new Date(p.created_at || Date.now()).toISOString().split('T')[0],
+            counter_offer: p.counter_offer || null,
+            negotiation_status: p.negotiation_status || 'none',
           }));
           setProposals(mapped);
         }
@@ -294,9 +393,74 @@ export function FreelancerDashboard() {
   };
 
   useEffect(() => {
-    fetchBackendProjects();
+    fetchBackendProjects(1);
     fetchMyProposals();
   }, [address]);
+
+  const handleSubmitCounterOffer = async (offer: CounterOffer) => {
+    if (!reCounterTarget) return;
+    if (!address) throw new Error('Please connect your freelancer wallet first');
+
+    setCounterOfferSubmitting(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const res = await authFetch(
+        `${apiUrl}/api/proposals/${reCounterTarget.id}/counter-offer`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'counter',
+            milestones: offer.milestones,
+            note: offer.note,
+            actor_address: address,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to send counter-offer');
+      }
+      await fetchMyProposals();
+      setReCounterTarget(null);
+    } finally {
+      setCounterOfferSubmitting(false);
+    }
+  };
+
+  const handleRespondToCounterOffer = async (
+    action: 'accept' | 'decline',
+    prop: Proposal
+  ) => {
+    if (!address) {
+      toast.error('Please connect your freelancer wallet first');
+      return;
+    }
+
+    setCounterOfferSubmitting(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const res = await authFetch(`${apiUrl}/api/proposals/${prop.id}/counter-offer`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, actor_address: address }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to ${action} counter-offer`);
+      }
+      toast.success(
+        action === 'accept'
+          ? 'Counter-offer accepted — agreed terms are locked into the project.'
+          : 'Counter-offer declined. The original proposal remains active.'
+      );
+      await fetchMyProposals();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not update the counter-offer');
+    } finally {
+      setCounterOfferSubmitting(false);
+    }
+  };
 
   // Filtered projects
   const filteredProjects = projects.filter(p => {
@@ -321,6 +485,12 @@ export function FreelancerDashboard() {
     }
 
     if (!selectedProject) return;
+
+    const check = canSubmitProposal(selectedProject, address, activeRole);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You cannot apply to your own escrow');
+      return;
+    }
 
     setIsSubmittingProposal(true);
 
@@ -357,6 +527,7 @@ export function FreelancerDashboard() {
         setProposals((prev) => [newProp, ...prev]);
 
         toast.success('Application submitted successfully!');
+        triggerCelebrationConfetti();
         setSelectedProject(null);
         setProposalCoverNote('');
         setProposalPortfolioUrl('');
@@ -393,6 +564,15 @@ export function FreelancerDashboard() {
             </span>
           </div>
 
+          <div className="flex items-center gap-2">
+          <CurrencyConverterWidget portfolioItems={projects.map((p) => ({ amount: p.budget || 0, token: p.token || 'USDC' }))} />
+          <button
+            onClick={() => setShowTaxExport(true)}
+            className="px-3 py-2 rounded-xl text-xs font-semibold bg-[#18181b] border border-[#27272a] text-[#e4e4e7] hover:bg-[#27272a] transition-all"
+            title="Export annual crypto income summary (CSV / PDF)"
+          >
+            🧾 Tax Export
+          </button>
           <div className="flex items-center space-x-1 bg-[#18181b] p-1 rounded-xl border border-[#27272a]">
             <button
               onClick={() => setActiveTab('explore')}
@@ -415,11 +595,12 @@ export function FreelancerDashboard() {
               My Proposals (<NumberRoll value={proposals.length} />)
             </button>
           </div>
+          </div>
         </div>
 
         {/* VIEW 1: EXPLORE PROJECTS */}
         {activeTab === 'explore' && (
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-4 sm:p-6 md:p-8 shadow-2xl space-y-5 sm:space-y-6">
+          <div ref={listRef} className="scroll-mt-6 bg-[#18181b] border border-[#27272a] rounded-2xl p-4 sm:p-6 md:p-8 shadow-2xl space-y-5 sm:space-y-6">
             
             {/* Dashboard Statistic Cards with Smooth NumberRoll Counter */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -447,6 +628,8 @@ export function FreelancerDashboard() {
               </div>
             </div>
 
+            {/* Multi-Currency Portfolio Tracker (#307) */}
+            <CurrencyConverterWidget />
             {/* Header & Filter Controls */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
               <div>
@@ -510,6 +693,12 @@ export function FreelancerDashboard() {
                           {proj.budget} {proj.token || 'USDC'}
                         </span>
                         {renderProjectActionBadge(proj, false)}
+                        <ProjectActionsDropdown
+                          project={proj}
+                          onView={() => setViewingProjectDetails(proj)}
+                          onDispute={() => setDisputeTarget(proj)}
+                          disputeDisabledReason={getDisputeBlockReason(proj)}
+                        />
                       </div>
                     </div>
 
@@ -585,64 +774,18 @@ export function FreelancerDashboard() {
                     )}
                   </div>
                 ))}
-
-                {/* Pagination Bar */}
-                {totalPages > 1 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-[#27272a]">
-                    <div className="text-xs text-[#a1a1aa]">
-                      Showing Page <span className="font-bold text-white">{currentPage}</span> of{' '}
-                      <span className="font-bold text-white">{totalPages}</span> ({totalProjects} total projects)
-                    </div>
-                    <div className="flex items-center space-x-1.5">
-                      <button
-                        onClick={() => {
-                          if (currentPage > 1) {
-                            const prev = currentPage - 1;
-                            setCurrentPage(prev);
-                            fetchBackendProjects(prev);
-                          }
-                        }}
-                        disabled={currentPage <= 1}
-                        className="px-3 py-1.5 bg-[#232326] hover:bg-[#27272a] disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-[#e4e4e7] rounded-xl border border-[#333338] transition-colors"
-                      >
-                        ← Previous
-                      </button>
-
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
-                        <button
-                          key={pg}
-                          onClick={() => {
-                            setCurrentPage(pg);
-                            fetchBackendProjects(pg);
-                          }}
-                          className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-colors ${
-                            pg === currentPage
-                              ? 'bg-indigo-600 text-white border border-indigo-500'
-                              : 'bg-[#232326] hover:bg-[#27272a] text-[#a1a1aa] border border-[#333338]'
-                          }`}
-                        >
-                          {pg}
-                        </button>
-                      ))}
-
-                      <button
-                        onClick={() => {
-                          if (currentPage < totalPages) {
-                            const next = currentPage + 1;
-                            setCurrentPage(next);
-                            fetchBackendProjects(next);
-                          }
-                        }}
-                        disabled={currentPage >= totalPages}
-                        className="px-3 py-1.5 bg-[#232326] hover:bg-[#27272a] disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-[#e4e4e7] rounded-xl border border-[#333338] transition-colors"
-                      >
-                        Next →
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
+            <Pagination
+              totalItems={totalProjects}
+              page={currentPage}
+              pageSize={pageSize}
+              itemLabel="projects"
+              disabled={loading}
+              scrollTarget={listRef}
+              onPageChange={(page) => void fetchBackendProjects(page)}
+              onPageSizeChange={(size) => void fetchBackendProjects(1, size)}
+            />
           </div>
         )}
 
@@ -702,6 +845,18 @@ export function FreelancerDashboard() {
                             <span>↗</span>
                           </a>
                         </div>
+                      )}
+
+                      {prop.counter_offer && prop.negotiation_status === 'countered' && (
+                        <CounterOfferSummary
+                          offer={prop.counter_offer}
+                          originalBudget={prop.budget}
+                          tokenSymbol={projects.find((p) => p.id === prop.project_id)?.token || 'USDC'}
+                          isSubmitting={counterOfferSubmitting}
+                          onAccept={() => handleRespondToCounterOffer('accept', prop)}
+                          onDecline={() => handleRespondToCounterOffer('decline', prop)}
+                          onRecounter={() => setReCounterTarget(prop)}
+                        />
                       )}
                     </div>
 
@@ -772,11 +927,48 @@ export function FreelancerDashboard() {
 
       </div>
 
+      {/* Counter-offer renegotiation modal (#150) */}
+      <ProposalCounterOfferModal
+        key={reCounterTarget?.id || 'closed-counter-offer'}
+        isOpen={Boolean(reCounterTarget)}
+        author="freelancer"
+        proposal={
+          reCounterTarget
+            ? {
+                id: reCounterTarget.id,
+                project_title: reCounterTarget.project_title,
+                freelancer_address: reCounterTarget.stellar_address,
+                budget: reCounterTarget.budget,
+                counter_offer: reCounterTarget.counter_offer,
+              }
+            : null
+        }
+        originalMilestones={((reCounterTarget
+          ? projects.find((project) => project.id === reCounterTarget.project_id)?.milestones
+          : []) || []).map((milestone) => ({
+          milestone_index: milestone.milestone_index,
+          title: milestone.title,
+          amount: milestone.amount,
+          due_date: milestone.due_date,
+        }))}
+        tokenSymbol={
+          projects.find((project) => project.id === reCounterTarget?.project_id)?.token || 'USDC'
+        }
+        isSubmitting={counterOfferSubmitting}
+        onClose={() => setReCounterTarget(null)}
+        onSubmit={handleSubmitCounterOffer}
+      />
+
       {/* Project Details Modal */}
-      {viewingProjectDetails && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
-            
+      <AccessibleModal
+        isOpen={Boolean(viewingProjectDetails)}
+        onClose={() => setViewingProjectDetails(null)}
+        ariaLabel={viewingProjectDetails ? `Project details: ${viewingProjectDetails.title}` : 'Project details'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-2xl w-full p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar"
+      >
+        {viewingProjectDetails && (
+          <>
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-3 sm:pb-4 border-b border-[#27272a] gap-3">
               <div>
@@ -805,10 +997,12 @@ export function FreelancerDashboard() {
                   {viewingProjectDetails.budget} {viewingProjectDetails.token || 'USDC'}
                 </span>
                 <button
+                  type="button"
                   onClick={() => setViewingProjectDetails(null)}
+                  aria-label="Close project details"
                   className="text-[#a1a1aa] hover:text-white transition-colors text-base sm:text-lg"
                 >
-                  ✕
+                  <span aria-hidden="true">✕</span>
                 </button>
               </div>
             </div>
@@ -942,25 +1136,32 @@ export function FreelancerDashboard() {
               </button>
               {renderProjectActionBadge(viewingProjectDetails, true)}
             </div>
-
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Application Submission Modal */}
-      {selectedProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+      <AccessibleModal
+        isOpen={Boolean(selectedProject)}
+        onClose={() => setSelectedProject(null)}
+        ariaLabel={selectedProject ? `Apply for ${selectedProject.title}` : 'Apply for project'}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn"
+        dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl"
+      >
+        {selectedProject && (
+          <>
             <div className="flex items-center justify-between pb-3 border-b border-[#27272a]">
               <div>
                 <h3 className="text-lg font-bold text-white">Apply for Project</h3>
                 <p className="text-xs text-[#a1a1aa] mt-0.5">{selectedProject.title} ({selectedProject.budget} {selectedProject.token || 'USDC'})</p>
               </div>
               <button
+                type="button"
                 onClick={() => setSelectedProject(null)}
+                aria-label="Close application modal"
                 className="text-[#a1a1aa] hover:text-white transition-colors"
               >
-                ✕
+                <span aria-hidden="true">✕</span>
               </button>
             </div>
 
@@ -1039,9 +1240,9 @@ export function FreelancerDashboard() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </AccessibleModal>
 
       {/* Image Lightbox Modal */}
       <ImageLightboxModal
@@ -1059,6 +1260,13 @@ export function FreelancerDashboard() {
         senderAddress={chatModalState.senderAddress}
         receiverAddress={chatModalState.receiverAddress}
         recipientRoleLabel={chatModalState.recipientRoleLabel}
+      />
+
+      {/* Annual tax / 1099 crypto income export (#161) */}
+      <TaxExportModal
+        isOpen={showTaxExport}
+        onClose={() => setShowTaxExport(false)}
+        freelancerAddress={address}
       />
 
       {/* Rich Milestone Deliverable Submission Modal */}
