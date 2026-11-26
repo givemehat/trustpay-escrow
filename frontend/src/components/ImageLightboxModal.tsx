@@ -19,7 +19,7 @@ export interface ImageLightboxModalProps {
 
 export function ImageLightboxModal({
   imageUrl,
-  imageAlt = 'Project File Attachment',
+  imageAlt = 'Evidence Document Attachment',
   isPdf = false,
   onClose,
   onAnnotatedExport,
@@ -66,7 +66,7 @@ export function ImageLightboxModal({
           </span>
         </div>
 
-        {/* Zoom Controls & Close */}
+        {/* Action Controls */}
         <div className="flex items-center space-x-2">
           <button
             type="button"
@@ -75,16 +75,15 @@ export function ImageLightboxModal({
             className="p-2 bg-[#232326] hover:bg-[#27272a] text-white rounded-xl border border-[#333338] text-xs font-bold transition-all"
             title="Zoom Out (-)"
           >
-            <span aria-hidden="true">🔎 -</span>
+            <span aria-hidden="true">🔍 -</span>
           </button>
           <button
             type="button"
             onClick={handleResetZoom}
-            aria-label="Reset zoom"
             className="px-3 py-2 bg-[#232326] hover:bg-[#27272a] text-white rounded-xl border border-[#333338] text-xs font-bold transition-all"
-            title="Reset Zoom"
+            title="Reset Zoom (100%)"
           >
-            Reset
+            100%
           </button>
           <button
             type="button"
@@ -95,7 +94,7 @@ export function ImageLightboxModal({
           >
             <span aria-hidden="true">🔍 +</span>
           </button>
-          {onAnnotatedExport && !annotating && (
+          {onAnnotatedExport && !annotating && !isPdfFile && (
             <button
               type="button"
               onClick={() => setAnnotating(true)}
@@ -119,7 +118,7 @@ export function ImageLightboxModal({
 
       {/* Main Zoomable Media Stage */}
       <div className="flex-1 w-full flex items-center justify-center overflow-auto p-4 relative my-auto">
-        {annotating && onAnnotatedExport ? (
+        {annotating && onAnnotatedExport && !isPdfFile ? (
           <div className="w-full max-w-5xl">
             <EvidenceAnnotationCanvas
               imageSrc={imageUrl}
@@ -129,6 +128,17 @@ export function ImageLightboxModal({
                 setAnnotating(false);
               }}
               onCancel={() => setAnnotating(false)}
+            />
+          </div>
+        ) : isPdfFile ? (
+          <div
+            style={{ transform: `scale(${zoomLevel})` }}
+            className="w-full max-w-4xl h-[75vh] bg-[#18181b] rounded-2xl border border-[#333338] shadow-2xl overflow-hidden transition-transform duration-200"
+          >
+            <iframe
+              src={imageUrl}
+              title={imageAlt}
+              className="w-full h-full border-0"
             />
           </div>
         ) : (

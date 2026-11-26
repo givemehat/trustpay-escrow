@@ -1,13 +1,17 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { ZkAttestationBadge } from './ZkAttestationBadge';
-import { AddressBadge } from './AddressBadge';
 import { toast } from 'sonner';
 import { CryptoId } from '@/components/ui/CryptoId';
+import { AddressBadge } from './AddressBadge';
+import { PortfolioLinkPreview } from './PortfolioLinkPreview';
+import { ZkAttestationBadge } from './ZkAttestationBadge';
 import { EmbeddedDemoSandbox } from './EmbeddedDemoSandbox';
-import { ProposalExpirationBadge, formatTimeRemaining } from '@/components/ProposalExpirationBadge';
+import { ProposalExpirationBadge, formatTimeRemaining } from './ProposalExpirationBadge';
+import { TruncatedText } from './TruncatedText';
 import { announcePolite } from '@/components/a11y/LiveAnnouncer';
+import { CounterOfferSummary } from '@/components/ProposalCounterOfferModal';
+import type { CounterOffer } from '@/lib/counter-offer';
 
 export interface ApplicantCardData {
   id: string;
@@ -25,6 +29,8 @@ export interface ApplicantCardData {
   expires_at?: string;
   granted?: boolean;
   zk_attestation?: unknown;
+  counter_offer?: CounterOffer | null;
+  negotiation_status?: 'none' | 'countered' | 'accepted' | 'declined';
 }
 
 export interface ApplicantCardProps {
@@ -39,9 +45,35 @@ export interface ApplicantCardProps {
   isStarred?: boolean;
   /** When provided, a star toggle is shown on the card. */
   onToggleStar?: (applicant: ApplicantCardData) => void;
+  /** Project budget, used as the baseline for an incoming counter-offer diff (#150). */
+  projectBudget?: number;
+  tokenSymbol?: string;
+  /** Opens the counter-offer editor for this applicant (#150). */
+  onCounterOffer?: (applicant: ApplicantCardData) => void;
+  /** Accepts, declines, or re-counters an incoming counter-offer (#150). */
+  onRespondToCounterOffer?: (
+    action: 'accept' | 'decline',
+    applicant: ApplicantCardData
+  ) => void | Promise<void>;
+  counterOfferSubmitting?: boolean;
 }
 
-export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenChat, onOpenProfile, isStarred = false, onToggleStar, isProcessing = false }: ApplicantCardProps) {
+export function ApplicantCard({
+  applicant,
+  onAccept,
+  onDeny,
+  onWithdraw,
+  onOpenChat,
+  onOpenProfile,
+  isProcessing = false,
+  isStarred = false,
+  onToggleStar,
+  projectBudget,
+  tokenSymbol = 'USDC',
+  onCounterOffer,
+  onRespondToCounterOffer,
+  counterOfferSubmitting = false,
+}: ApplicantCardProps) {
   const [actionLoading, setActionLoading] = useState<'accept' | 'deny' | 'withdraw' | null>(null);
   const [statusAnnouncement, setStatusAnnouncement] = useState('');
 
@@ -126,6 +158,7 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
               value={walletAddr}
               className="sm:text-sm text-white bg-[#232326] px-3 py-1 rounded-xl border border-[#333338] select-all break-all"
             />
+            <AddressBadge address={walletAddr} showExplorerLink={true} />
             <AddressBadge value={walletAddr} label="Copy Wallet Address" />
             {onToggleStar && (
               <button
@@ -155,7 +188,7 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
           {applicant.expires_at && (
             <ProposalExpirationBadge expiresAt={applicant.expires_at} />
           )}
-          {(currentStatus === 'pending') && (
+          {currentStatus === 'pending' && (
             <span className="px-3 py-1 bg-[#451a03] text-[#f97316] border border-[#78350f] text-xs font-semibold rounded-full inline-flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] animate-pulse" aria-hidden="true"></span>
               Pending Review
@@ -183,11 +216,32 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
 
       {/* Cover Note Section */}
       <div className="space-y-1.5">
-        <h4 className="text-xs font-bold text-[#e4e4e7] uppercase tracking-wider">Cover Note</h4>
-        <p className="text-xs sm:text-sm text-[#a1a1aa] leading-relaxed whitespace-pre-line bg-[#18181b] p-3.5 rounded-xl border border-[#27272a]">
-          &quot;{coverText}&quot;
-        </p>
+        <h4 className="text-xs font-bold text-[#e4e4e7] uppercase tracking-wider">
+          Cover Note
+        </h4>
+        <div className="bg-[#18181b] p-3.5 rounded-xl border border-[#27272a]">
+          <TruncatedText text={coverText} lines={3} />
+        </div>
       </div>
+
+      {/* Incoming counter-offer from the freelancer (#150) */}
+      {applicant.counter_offer && applicant.negotiation_status === 'countered' && (
+        <CounterOfferSummary
+          offer={applicant.counter_offer}
+          originalBudget={projectBudget}
+          tokenSymbol={tokenSymbol}
+          isSubmitting={counterOfferSubmitting}
+          onAccept={() => {
+            if (onRespondToCounterOffer) return onRespondToCounterOffer('accept', applicant);
+            return onAccept(applicant.id);
+          }}
+          onDecline={() => {
+            if (onRespondToCounterOffer) return onRespondToCounterOffer('decline', applicant);
+            return onDeny(applicant.id);
+          }}
+          onRecounter={onCounterOffer ? () => onCounterOffer(applicant) : undefined}
+        />
+      )}
 
       {/* Portfolio Link Section */}
       {portfolioUrl && (
@@ -240,6 +294,17 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
         {/* Accept / Deny Buttons (Visible when pending) */}
         {currentStatus === 'pending' ? (
           <div className="flex flex-wrap items-center space-x-2.5 self-end sm:self-center">
+            {onCounterOffer && (
+              <button
+                type="button"
+                onClick={() => onCounterOffer(applicant)}
+                disabled={isProcessing || actionLoading !== null}
+                data-testid="applicant-counter-offer"
+                className="px-4 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs font-bold rounded-xl transition-all active:scale-95 disabled:opacity-50"
+              >
+                ↔ Counter Offer
+              </button>
+            )}
             {onWithdraw && (
               <button
                 type="button"
@@ -295,3 +360,5 @@ export function ApplicantCard({ applicant, onAccept, onDeny, onWithdraw, onOpenC
     </div>
   );
 }
+
+export default ApplicantCard;

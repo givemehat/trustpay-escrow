@@ -3,7 +3,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { getLiquidityPoolConfig, getLiquidityPoolKey } from '@/config/tokens';
 import { DEFAULT_POOL_FEE_BPS } from '@/lib/liquidity-depth';
 import { fetchAmmPoolReserves, AmmPoolReserveSnapshot } from '@/lib/soroban';
-
 export interface TokenRates {
   XLM: number;
   USDC: number;

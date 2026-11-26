@@ -13,6 +13,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/lib/api', () => ({ authFetch: (...args: Parameters<typeof fetch>) => fetch(...args) }));
 vi.mock('@/hooks/useCreateProjectForm', () => ({
   useTokenBalance: () => ({ balance: null, loading: false }),
+  useTokenBalances: () => ({ balances: {}, loading: false }),
   getBalanceShortfall: () => null,
 }));
 vi.mock('./ProjectChatModal', () => ({ ProjectChatModal: () => null }));

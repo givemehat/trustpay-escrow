@@ -18,47 +18,48 @@ export interface FileNode {
   size?: number;
   url?: string;
   isFolder: boolean;
+  category: FileCategory;
+  extension: string;
   children?: FileNode[];
-  category?: FileCategory;
-  extension?: string;
+}
+
+export function getFileCategory(filename: string): FileCategory {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (['ts', 'tsx', 'js', 'jsx', 'json', 'sol', 'rs', 'py', 'go', 'html', 'css', 'yaml', 'yml'].includes(ext)) {
+    return 'code';
+  }
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) {
+    return 'image';
+  }
+  if (ext === 'pdf') {
+    return 'pdf';
+  }
+  if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) {
+    return 'archive';
+  }
+  return 'document';
 }
 
 export function formatFileSize(bytes?: number): string {
-  if (bytes === undefined || bytes === null || Number.isNaN(bytes)) return '';
+  if (bytes === undefined || bytes === null) return '';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function getFileCategory(filename: string): FileCategory {
-  const dotIndex = filename.lastIndexOf('.');
-  if (dotIndex === -1) return 'document';
-  const ext = filename.slice(dotIndex + 1).toLowerCase();
-
-  const codeExts = ['js', 'jsx', 'ts', 'tsx', 'rs', 'sol', 'py', 'go', 'html', 'css', 'json', 'yaml', 'yml', 'md', 'sh'];
-  const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'];
-  const archiveExts = ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'];
-
-  if (ext === 'pdf') return 'pdf';
-  if (codeExts.includes(ext)) return 'code';
-  if (imageExts.includes(ext)) return 'image';
-  if (archiveExts.includes(ext)) return 'archive';
-  return 'document';
-}
-
-export function getCategoryBadge(category?: FileCategory): { label: string; colorClass: string; icon: string } {
+export function getCategoryBadge(category: FileCategory): { icon: string; colorClass: string } {
   switch (category) {
     case 'code':
-      return { label: 'Code', colorClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: '< / >' };
+      return { icon: '</>', colorClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
     case 'image':
-      return { label: 'Image', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20', icon: 'IMG' };
+      return { icon: 'IMG', colorClass: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
     case 'pdf':
-      return { label: 'PDF', colorClass: 'bg-red-500/10 text-red-400 border-red-500/20', icon: 'PDF' };
+      return { icon: 'PDF', colorClass: 'bg-rose-500/10 text-rose-400 border-rose-500/20' };
     case 'archive':
-      return { label: 'Archive', colorClass: 'bg-amber-500/10 text-amber-400 border-amber-500/20', icon: 'ZIP' };
+      return { icon: 'ZIP', colorClass: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
     case 'document':
     default:
-      return { label: 'Doc', colorClass: 'bg-blue-500/10 text-blue-400 border-blue-500/20', icon: 'DOC' };
+      return { icon: 'DOC', colorClass: 'bg-blue-500/10 text-blue-400 border-blue-500/20' };
   }
 }
 
@@ -68,7 +69,7 @@ export function getCategoryBadge(category?: FileCategory): { label: string; colo
 export function parsePathsToTree(files: FileItem[]): FileNode[] {
   const rootNodes: FileNode[] = [];
 
-  for (const [index, file] of files.entries()) {
+  for (const file of files) {
     const rawPath = file.path.replace(/\\/g, '/').replace(/^\/+/, '');
     const parts = rawPath.split('/').filter(Boolean);
 
@@ -89,7 +90,7 @@ export function parsePathsToTree(files: FileItem[]): FileNode[] {
         const extension = dotIndex !== -1 ? part.slice(dotIndex + 1) : '';
 
         currentLevel.push({
-          id: file.id ?? `file:${index}:${accumulatedPath}`,
+          id: file.id ?? accumulatedPath,
           name: part,
           path: accumulatedPath,
           size: file.size,
@@ -107,6 +108,8 @@ export function parsePathsToTree(files: FileItem[]): FileNode[] {
             name: part,
             path: accumulatedPath,
             isFolder: true,
+            category: 'document',
+            extension: '',
             children: [],
           };
           currentLevel.push(folder);
@@ -150,16 +153,44 @@ export function DeliverableFolderTree({
   className = '',
 }: DeliverableFolderTreeProps) {
   const tree = useMemo(() => parsePathsToTree(files), [files]);
-  const [defaultExpanded, setDefaultExpanded] = useState(true);
-  const [expandedFolders, setExpandedFolders] = useState(() => new Map<string, boolean>());
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(() => {
+    // Default: expand all folders initially
+    const initial: Record<string, boolean> = {};
+    function collectFolders(nodes: FileNode[]) {
+      for (const node of nodes) {
+        if (node.isFolder) {
+          initial[node.id] = true;
+          if (node.children) collectFolders(node.children);
+        }
+      }
+    }
+    collectFolders(tree);
+    return initial;
+  });
 
   const toggleFolder = (id: string) => {
-    setExpandedFolders((previous) => new Map(previous).set(id, !(previous.get(id) ?? defaultExpanded)));
+    setExpandedFolders((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
   };
 
-  const setAllFolders = (expanded: boolean) => {
-    setDefaultExpanded(expanded);
-    setExpandedFolders(new Map());
+  const expandAll = () => {
+    const updated: Record<string, boolean> = {};
+    function collect(nodes: FileNode[]) {
+      for (const node of nodes) {
+        if (node.isFolder) {
+          updated[node.id] = true;
+          if (node.children) collect(node.children);
+        }
+      }
+    }
+    collect(tree);
+    setExpandedFolders(updated);
+  };
+
+  const collapseAll = () => {
+    setExpandedFolders({});
   };
 
   const handleDownload = (file: FileNode) => {
@@ -180,7 +211,7 @@ export function DeliverableFolderTree({
       <ul className="space-y-1">
         {nodes.map((node) => {
           if (node.isFolder) {
-            const isExpanded = expandedFolders.get(node.id) ?? defaultExpanded;
+            const isExpanded = !!expandedFolders[node.id];
             const childCount = node.children?.length || 0;
 
             return (
@@ -247,6 +278,7 @@ export function DeliverableFolderTree({
                       onClick={() => handleDownload(node)}
                       data-testid={`download-button-${node.path}`}
                       aria-label={`Download ${node.name}`}
+                      title={`Download ${node.name}`}
                       className="px-2 py-0.5 rounded bg-[#232326] hover:bg-blue-600 hover:text-white text-[#a1a1aa] text-[10px] font-semibold border border-[#333338] transition-colors"
                     >
                       Download
@@ -284,7 +316,7 @@ export function DeliverableFolderTree({
         <div className="flex items-center space-x-1.5 text-[11px]">
           <button
             type="button"
-            onClick={() => setAllFolders(true)}
+            onClick={expandAll}
             data-testid="expand-all-btn"
             className="px-2 py-1 rounded bg-[#27272a] hover:bg-[#333338] text-[#a1a1aa] hover:text-white transition-colors"
           >
@@ -292,7 +324,7 @@ export function DeliverableFolderTree({
           </button>
           <button
             type="button"
-            onClick={() => setAllFolders(false)}
+            onClick={collapseAll}
             data-testid="collapse-all-btn"
             className="px-2 py-1 rounded bg-[#27272a] hover:bg-[#333338] text-[#a1a1aa] hover:text-white transition-colors"
           >

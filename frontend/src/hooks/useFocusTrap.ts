@@ -32,8 +32,6 @@ function isElementFocusable(el: HTMLElement, container?: HTMLElement): boolean {
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
 
-    // `display: none` is not inherited, so walk ancestors up to the trap container
-    // to exclude focusable descendants inside hidden responsive wrappers.
     let parent = el.parentElement;
     while (parent && parent !== container) {
       if (window.getComputedStyle(parent).display === 'none') return false;
@@ -52,8 +50,6 @@ export function getFocusableElements(container: HTMLElement): HTMLElement[] {
     (el) => isElementFocusable(el, container)
   );
 
-  // Deduplicate named radio groups to match native Tab behavior: only the checked
-  // radio (or the first radio if none is checked) participates in the Tab sequence.
   const checkedRadios = new Map<string, HTMLInputElement>();
   const firstRadios = new Map<string, HTMLInputElement>();
 
@@ -80,75 +76,67 @@ function canRestoreFocus(el: HTMLElement | null): el is HTMLElement {
   return true;
 }
 
-export interface UseFocusTrapOptions {
+export interface UseFocusTrapExplicitOptions<T extends HTMLElement = HTMLElement> {
   /** Whether the modal / trap is currently active. */
-  isOpen: boolean;
-  /** Optional Escape-to-close handler (uses the shared LIFO `useEscapeKey` stack). */
+  isOpen?: boolean;
+  active?: boolean;
+  /** Optional Escape-to-close handler. */
   onClose?: () => void;
-  /** Element to focus first when opened; defaults to the first focusable descendant or container. */
-  initialFocusRef?: RefObject<HTMLElement | null>;
-  /** Explicit element to restore focus to when closed; defaults to `document.activeElement` before open. */
-  returnFocusRef?: RefObject<HTMLElement | null>;
+  onEscape?: () => void;
+  /** Element to focus first when opened. */
+  initialFocusRef?: RefObject<T | HTMLElement | null>;
+  /** Explicit element to restore focus to when closed. */
+  returnFocusRef?: RefObject<T | HTMLElement | null>;
   /** Whether to restore focus to the trigger when closed (default: `true`). */
   restoreFocus?: boolean;
   /** Whether to move initial focus inside the container when opened (default: `true`). */
   autoFocus?: boolean;
 }
 
-/**
- * Traps Tab / Shift+Tab keyboard focus inside `containerRef` while `isOpen` is true,
- * coordinates Escape handling via `useEscapeKey`, and restores focus to the trigger
- * element when the modal closes.
- */
-export function useFocusTrap(
-  containerRef: RefObject<HTMLElement | null>,
-  {
-    isOpen,
-    onClose,
-    initialFocusRef,
-    returnFocusRef,
-    restoreFocus = true,
-    autoFocus = true,
-  }: UseFocusTrapOptions
-) {
-  const onCloseRef = useRef(onClose);
-  const initialFocusRefHolder = useRef(initialFocusRef);
-  const returnFocusRefHolder = useRef(returnFocusRef);
+export function useFocusTrap<T extends HTMLElement = HTMLDivElement>(
+  arg1?: RefObject<T | null> | UseFocusTrapExplicitOptions<T>,
+  arg2?: UseFocusTrapExplicitOptions<T>
+): RefObject<T | null> {
+  const internalRef = useRef<T | null>(null);
 
-  useEffect(() => {
-    onCloseRef.current = onClose;
-    initialFocusRefHolder.current = initialFocusRef;
-    returnFocusRefHolder.current = returnFocusRef;
-  });
+  const isExplicitRef = arg1 && typeof arg1 === 'object' && 'current' in arg1;
+  const containerRef = (isExplicitRef ? arg1 : internalRef) as RefObject<T | null>;
+  const options = (isExplicitRef ? arg2 : arg1) || {};
+
+  const active = Boolean(options.isOpen ?? options.active);
+  const handleClose = options.onClose ?? options.onEscape;
+  const restoreFocus = options.restoreFocus !== false;
+  const autoFocus = options.autoFocus !== false;
 
   useEscapeKey(() => {
-    onCloseRef.current?.();
-  }, Boolean(isOpen && onClose));
+    handleClose?.();
+  }, active && Boolean(handleClose));
+
+  const returnFocusRefHolder = useRef(options.returnFocusRef);
+  returnFocusRefHolder.current = options.returnFocusRef;
+
+  const initialFocusRefHolder = useRef(options.initialFocusRef);
+  initialFocusRefHolder.current = options.initialFocusRef;
 
   useEffect(() => {
-    if (!isOpen || typeof document === 'undefined') return;
+    if (!active) return;
+
     const container = containerRef.current;
     if (!container) return;
 
-    const previousFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    if (!container.hasAttribute('tabindex')) {
-      container.setAttribute('tabindex', '-1');
-    }
-
     activeTrapStack.push(container);
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     if (autoFocus) {
-      const explicitTarget = initialFocusRefHolder.current?.current ?? null;
-      if (explicitTarget && container.contains(explicitTarget) && isElementFocusable(explicitTarget, container)) {
-        explicitTarget.focus({ preventScroll: true });
+      const explicitInitial = initialFocusRefHolder.current?.current;
+      if (explicitInitial && container.contains(explicitInitial) && isElementFocusable(explicitInitial, container)) {
+        explicitInitial.focus();
       } else {
-        const focusables = getFocusableElements(container);
-        if (focusables.length > 0) {
-          focusables[0].focus({ preventScroll: true });
-        } else {
-          container.focus({ preventScroll: true });
+        const tabbables = getFocusableElements(container);
+        if (tabbables.length > 0) {
+          tabbables[0].focus();
+        } else if (container.tabIndex >= 0) {
+          container.focus();
         }
       }
     }
@@ -157,29 +145,27 @@ export function useFocusTrap(
       if (event.key !== 'Tab') return;
       if (activeTrapStack[activeTrapStack.length - 1] !== container) return;
 
-      const focusables = getFocusableElements(container);
-      if (focusables.length === 0) {
+      const tabbables = getFocusableElements(container);
+      if (tabbables.length === 0) {
         event.preventDefault();
-        container.focus({ preventScroll: true });
+        container.focus();
         return;
       }
 
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = document.activeElement as HTMLElement | null;
+      const first = tabbables[0];
+      const last = tabbables[tabbables.length - 1];
+      const current = document.activeElement;
 
-      if (!active || !container.contains(active) || active === container) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-
-      if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
+      if (event.shiftKey) {
+        if (current === first || !container.contains(current)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (current === last || !container.contains(current)) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
 
@@ -212,5 +198,9 @@ export function useFocusTrap(
         mainLandmark.focus({ preventScroll: true });
       }
     };
-  }, [isOpen, containerRef, restoreFocus, autoFocus]);
+  }, [active, containerRef, restoreFocus, autoFocus]);
+
+  return containerRef;
 }
+
+export default useFocusTrap;

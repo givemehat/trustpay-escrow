@@ -3,6 +3,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { CryptoId } from '@/components/ui/CryptoId';
 import { triggerCelebrationConfetti } from '@/lib/confetti';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
+import { announcePolite } from '@/components/a11y/LiveAnnouncer';
 
 export interface SuccessCheckmarkProps {
   isOpen: boolean;

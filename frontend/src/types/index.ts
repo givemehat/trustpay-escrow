@@ -1,3 +1,5 @@
+import type { CounterOffer } from '@/lib/counter-offer';
+
 export interface Milestone {
   id: string;
   project_id?: string;
@@ -7,16 +9,25 @@ export interface Milestone {
   amount: number;
   status: 'pending' | 'submitted' | 'in_revision' | 'approved' | 'disputed';
   due_date?: string;
+  /** Planned start date used by the Gantt roadmap visualizer (#154). */
+  start_date?: string;
+  /** Milestone indexes that must complete before this milestone starts (#154). */
+  depends_on?: number[];
   submitted_at?: string;
   auto_release_at?: string;
   revision_limit?: number;
   revisions_remaining?: number;
   revision_note?: string;
+  /** Structured revision checklist requested by the client (#153). */
+  revision_checklist?: string[];
+  /** Annotated screenshot attachments stored with the revision request (#153). */
+  revision_attachments?: RevisionAttachment[];
   deliverable_hash?: string;
   deliverable_url?: string;
   deliverable_notes?: string;
   deliverable_type?: string;
   tx_hash?: string;
+  revision_count?: number;
 }
 
 export interface Project {
@@ -37,6 +48,8 @@ export interface Project {
   freelancer_address?: string;
   arbiter_id?: string;
   arbiter_address?: string;
+  arbiter_addresses?: string[];
+  dispute_reason?: string;
   contract_id?: string;
   project_id_onchain?: number | string | bigint;
   tx_hash?: string;
@@ -49,6 +62,26 @@ export interface Project {
   yield_enabled?: boolean;
   estimated_yield?: number;
   blend_pool_address?: string;
+  /** Recurring retainer agreement metadata (#149). */
+  retainer_config?: RetainerConfig | null;
+}
+
+export interface RevisionAttachment {
+  name: string;
+  size?: number;
+  type?: string;
+  /** Data URL preview so the deliverable thread renders the annotation. */
+  url: string;
+}
+
+export interface RetainerConfig {
+  frequency: 'weekly' | 'biweekly' | 'monthly';
+  cycles: number;
+  amountPerCycle: number;
+  startDate: string;
+  token?: string;
+  status?: 'active' | 'completed' | 'terminated';
+  completedCycles?: number;
 }
 
 export interface Applicant {
@@ -66,6 +99,8 @@ export interface Applicant {
   granted?: boolean;
   created_at?: string;
   zk_attestation?: unknown;
+  counter_offer?: CounterOffer | null;
+  negotiation_status?: 'none' | 'countered' | 'accepted' | 'declined';
 }
 
 export interface Proposal {
@@ -80,7 +115,12 @@ export interface Proposal {
   budget: number;
   status: 'pending' | 'accepted' | 'denied' | 'granted' | 'rejected';
   created_at: string;
+  /** Proposal counter-offer terms exchanged before escrow lock (#150). */
+  counter_offer?: CounterOffer | null;
+  negotiation_status?: 'none' | 'countered' | 'accepted' | 'declined';
 }
+
+export type { CounterOffer, MilestoneTerms } from '@/lib/counter-offer';
 
 export interface User {
   id: string;
@@ -99,6 +139,54 @@ export interface PaginationMeta {
   totalPages: number;
   hasNextPage: boolean;
   hasPrevPage: boolean;
+}
+
+export type TransactionOperationType = 'Deposit' | 'Release' | 'Dispute' | 'Fee' | 'Refund' | 'Other';
+
+export interface TransactionActivity {
+  id: string;
+  hash: string;
+  ledger: number;
+  timestamp: string;
+  operation_type: TransactionOperationType;
+  amount: number;
+  asset: string;
+  counterparty: string;
+  status: 'success' | 'failed' | 'pending';
+}
+
+export interface ContractTtlInfo {
+  contract_id: string;
+  current_ledger: number;
+  expiration_ledger: number;
+  remaining_ledgers: number;
+  is_warning: boolean;
+  last_bumped_at?: string;
+}
+
+export interface ProjectReview {
+  id: string;
+  project_id: string;
+  reviewer_address: string;
+  reviewer_role: 'client' | 'freelancer';
+  communication_rating: number;
+  quality_rating: number;
+  timeliness_rating: number;
+  average_rating: number;
+  testimonial: string;
+  created_at: string;
+}
+
+/** A freelancer the client has starred, with private notes (#255). */
+export interface StarredFreelancer {
+  /** Stellar address, the stable identifier. */
+  address: string;
+  name?: string;
+  /** Private to the client; never sent to the freelancer. */
+  notes: string;
+  starredAt: string;
+  /** Project the freelancer applied to or worked on, for context. */
+  lastProjectTitle?: string;
 }
 
 /** One payout tranche in a DAO escrow proposal. */
@@ -124,4 +212,37 @@ export interface DaoProposalInput {
   yieldEnabled: boolean;
   deadline?: string;
   votingPeriodDays: number;
+}
+
+/** Assets with a Blend lending pool backing escrow yield (#118). */
+export type BlendPoolAsset = 'USDC' | 'XLM';
+
+/** Live lending rate and utilization for one Blend pool. */
+export interface BlendPoolRate {
+  asset: BlendPoolAsset;
+  /** Annual percentage yield as a decimal, e.g. 0.048 for 4.8%. */
+  apy: number;
+  /** Share of supplied liquidity currently borrowed, 0 to 1. */
+  utilization: number;
+  updatedAt: string;
+  /** `fallback` means the oracle was unreachable and defaults are shown. */
+  source: 'live' | 'fallback';
+}
+
+export interface BlendYieldPoint {
+  day: number;
+  /** Principal plus compounded interest. */
+  balance: number;
+  accrued: number;
+}
+
+export interface BlendYieldSummary {
+  principal: number;
+  days: number;
+  accrued: number;
+  balance: number;
+  /** Interest paid to the client under the yield split. */
+  clientShare: number;
+  /** Interest retained by the platform under the yield split. */
+  platformShare: number;
 }

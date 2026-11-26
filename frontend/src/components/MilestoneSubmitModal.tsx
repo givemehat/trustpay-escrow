@@ -12,12 +12,14 @@ import {
   deliverableSubmissionSchema,
   MAX_DELIVERABLE_FILES,
   parseGitHubPullRequestUrl,
+  isGitHubPullRequestUrl,
   verifyGitHubPullRequest,
   type GitHubPrVerification,
 } from '@/lib/validators';
 import type { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
 import { MarkdownDeliverableEditor } from './MarkdownDeliverableEditor';
+import { DeliverableDiffViewer } from './DeliverableDiffViewer';
 import { DeliverableFolderTree } from './DeliverableFolderTree';
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -96,6 +98,7 @@ export function MilestoneSubmitModal({
   const [isDragging, setIsDragging] = useState(false);
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const [txStatus, setTxStatus] = useState<{ stage: TxStage | 'validating'; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -107,6 +110,13 @@ export function MilestoneSubmitModal({
     objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
 
+  useEffect(() => {
+    if (txStatus?.message) {
+      announcePolite(
+        `${txStatus.stage === 'error' ? 'Submission failed' : 'Milestone submission'} ${txStatus.stage}: ${txStatus.message}`
+      );
+    }
+  }, [txStatus]);
   if (!isOpen) return null;
 
   const addFiles = (incoming: FileList | File[]) => {
@@ -332,6 +342,11 @@ export function MilestoneSubmitModal({
               Work Summary <span className="text-red-400">*</span>
             </label>
             <MarkdownDeliverableEditor value={notes} onChange={setNotes} />
+            {notes.trim().length > 0 && notes.trim().length < 20 && (
+              <p className="text-xs text-red-400 mt-1" data-testid="notes-validation-error">
+                Work summary must be at least 20 characters ({notes.trim().length}/20)
+              </p>
+            )}
           </section>
 
           <section className="space-y-2">
@@ -363,6 +378,11 @@ export function MilestoneSubmitModal({
                 Add & Verify
               </button>
             </div>
+            {prInput.trim().length > 0 && !isGitHubPullRequestUrl(prInput) && (
+              <p className="text-xs text-red-400 mt-1" data-testid="pr-url-error">
+                Enter a valid GitHub pull request URL (https://github.com/owner/repo/pull/123)
+              </p>
+            )}
 
             {prLinks.length > 0 && (
               <ul className="space-y-2 pt-1" data-testid="pr-link-list">
@@ -548,7 +568,7 @@ export function MilestoneSubmitModal({
               <button
                 type="button"
                 onClick={onClose}
-                disabled={submitting}
+            disabled={submitting}
                 className="px-4 py-2 text-xs font-semibold rounded-xl text-[#a1a1aa] hover:text-white disabled:opacity-40"
               >
                 Cancel
@@ -556,7 +576,7 @@ export function MilestoneSubmitModal({
               <button
                 type="submit"
                 data-testid="submit-deliverable"
-                disabled={submitting}
+                disabled={submitting || notes.trim().length < 20}
                 aria-busy={submitting || undefined}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50"
               >

@@ -1,15 +1,21 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useCreateProjectForm } from '@/hooks/useCreateProjectForm';
-import { SUPPORTED_TOKENS } from '@/config/tokens';
+import { CurrencyAmountInput } from '@/components/CurrencyAmountInput';
+import { TokenSelector } from '@/components/TokenSelector';
 import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { useWalletStore } from '@/store/walletStore';
+import { FiatOnRampModal } from '@/components/FiatOnRampModal';
+import { PathPaymentSwapWidget } from '@/components/PathPaymentSwapWidget';
 
 export function CreateProjectWizard() {
-  const { address } = useWalletStore();
+  const { address, targetNetwork } = useWalletStore();
+  const [showOnRamp, setShowOnRamp] = useState(false);
+  const [showSwap, setShowSwap] = useState(false);
   const {
     formData,
+    currencyPrefix,
     loading,
     errors,
     currentStep,
@@ -23,10 +29,14 @@ export function CreateProjectWizard() {
     handleFileUploadMock,
     handleSubmit,
     walletBalance,
+    tokenBalances,
+    tokenBalancesLoading,
     balanceLoading,
     balanceShortfall,
     hasSufficientBalance,
     refreshBalance,
+    handleFiatDepositDetected,
+    handlePathSwapComplete,
   } = useCreateProjectForm();
 
   const steps = [
@@ -232,23 +242,25 @@ export function CreateProjectWizard() {
                 <label className="block text-xs font-bold text-[#d4d4d8] uppercase tracking-wider mb-2">
                   Total Budget Amount <span className="text-red-400">*</span>
                 </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    name="budget"
-                    min="1"
-                    step="any"
-                    value={formData.budget === 0 ? '' : formData.budget}
-                    onChange={handleChange}
-                    placeholder="e.g. 2500"
-                    className={`w-full px-4 py-3 rounded-xl bg-[#18181c] border ${
-                      errors.budget ? 'border-red-500' : 'border-[#27272a]'
-                    } text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 pr-16`}
-                  />
-                  <span className="absolute right-4 top-3 text-xs font-bold text-blue-400">
-                    {formData.token}
-                  </span>
-                </div>
+                <CurrencyAmountInput
+                  token={formData.token}
+                  name="budget"
+                  min="1"
+                  step="any"
+                  value={formData.budget === 0 ? '' : formData.budget}
+                  onChange={(raw) =>
+                    handleChange({
+                      target: { name: 'budget', value: raw },
+                    } as React.ChangeEvent<HTMLInputElement>)
+                  }
+                  placeholder="e.g. 2500"
+                  data-testid="wizard-budget-input"
+                  badgeTestId="wizard-budget-prefix"
+                  aria-label={`Total Budget Amount (${currencyPrefix})`}
+                  inputClassName={`w-full pr-4 py-3 rounded-xl bg-[#18181c] border ${
+                    errors.budget ? 'border-red-500' : 'border-[#27272a]'
+                  } text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
                 {errors.budget && <p className="text-xs text-red-400 mt-1">{errors.budget}</p>}
               </div>
 
@@ -290,34 +302,17 @@ export function CreateProjectWizard() {
               <label className="block text-xs font-bold text-[#d4d4d8] uppercase tracking-wider mb-3">
                 Select Escrow Token
               </label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {Object.values(SUPPORTED_TOKENS).map((t) => {
-                  const isSelected = formData.token === t.symbol;
-                  return (
-                    <div
-                      key={t.symbol}
-                      onClick={() =>
-                        handleChange({
-                          target: { name: 'token', value: t.symbol },
-                        } as any)
-                      }
-                      className={`p-4 rounded-2xl border text-center cursor-pointer transition-all ${
-                        isSelected
-                          ? 'bg-blue-600/20 border-blue-500 shadow-md ring-1 ring-blue-500'
-                          : 'bg-[#18181c] border-[#27272a] hover:border-[#3f3f46]'
-                      }`}
-                    >
-                      <div className="font-extrabold text-base text-white">{t.symbol}</div>
-                      <div className="text-[11px] text-[#a1a1aa] mt-1">{t.name}</div>
-                      {isSelected && (
-                        <span className="inline-block mt-2 text-[10px] font-bold text-blue-400">
-                          ✓ Selected
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <TokenSelector
+                value={formData.token}
+                onChange={(symbol) =>
+                  handleChange({
+                    target: { name: 'token', value: symbol },
+                  } as any)
+                }
+                balances={tokenBalances}
+                balancesLoading={tokenBalancesLoading}
+                network={targetNetwork}
+              />
             </div>
 
             {/* Blend Yield Generation Feature */}
@@ -412,6 +407,46 @@ export function CreateProjectWizard() {
               budget={formData.budget}
               token={formData.token}
               onRefresh={refreshBalance}
+            />
+
+            {address && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowOnRamp(true)}
+                  className="rounded-lg border border-[#27272a] px-3 py-2 text-xs font-semibold text-white hover:border-blue-500"
+                >
+                  Buy USDC with card or bank
+                </button>
+                {formData.token === 'USDC' && (
+                  <button
+                    type="button"
+                    onClick={() => setShowSwap((v) => !v)}
+                    aria-expanded={showSwap}
+                    className="rounded-lg border border-[#27272a] px-3 py-2 text-xs font-semibold text-white hover:border-blue-500"
+                  >
+                    Pay with XLM or EURC
+                  </button>
+                )}
+              </div>
+            )}
+            {showSwap && address && (
+              <PathPaymentSwapWidget
+                walletAddress={address}
+                destinationToken={formData.token}
+                requiredAmount={balanceShortfall > 0 ? balanceShortfall : formData.budget}
+                onSwapComplete={handlePathSwapComplete}
+              />
+            )}
+            <FiatOnRampModal
+              isOpen={showOnRamp}
+              onClose={() => setShowOnRamp(false)}
+              walletAddress={address}
+              suggestedAmount={balanceShortfall > 0 ? balanceShortfall : formData.budget}
+              onDepositDetected={(result) => {
+                setShowOnRamp(false);
+                handleFiatDepositDetected(result);
+              }}
             />
 
             {!address && (

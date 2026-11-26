@@ -1,13 +1,13 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { useWalletStore, useActiveWalletAddress } from '@/store/walletStore';
 import { ClientDashboard } from './ClientDashboard';
 import { FreelancerDashboard } from './FreelancerDashboard';
 import WalletConnect, { WalletAddressCopy } from './WalletConnect';
 import { ArbiterDashboard } from './ArbiterDashboard';
 import { RoleSwitcher } from './RoleSwitcher';
-import Link from 'next/link';
 import { OrgWalletSwitcher } from './OrgWalletSwitcher';
 import NotificationBell from './NotificationBell';
 
@@ -87,3 +87,5 @@ export function DashboardRouter() {
     </div>
   );
 }
+
+export default DashboardRouter;

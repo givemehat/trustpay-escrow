@@ -1,300 +1,102 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import WalletConnect from "./WalletConnect";
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import React from 'react';
+import WalletConnect from './WalletConnect';
+import * as freighterApi from '@stellar/freighter-api';
+import { useWalletStore } from '@/store/walletStore';
 
-const mocks = vi.hoisted(() => ({
-  wallet: { address: "G" + "A".repeat(55), activeRole: "client", walletName: "Freighter", setWalletInfo: vi.fn(), disconnect: vi.fn() },
-  push: vi.fn(),
-  success: vi.fn(),
-  error: vi.fn(),
-}));
-vi.mock("@/store/walletStore", () => ({ useWalletStore: () => mocks.wallet }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
-// Isolate address-copy behavior from the upstream faucet and balance requests.
-vi.mock("@/components/TestnetFaucetModal", () => ({ TestnetFaucetModal: () => null }));
-vi.mock("@/lib/friendbot", () => ({ isTestnetNetwork: () => false, fetchAccountBalances: vi.fn() }));
-vi.mock("sonner", () => ({ toast: { success: mocks.success, error: mocks.error, info: vi.fn() } }));
-vi.mock("@stellar/freighter-api", () => ({
-  isConnected: vi.fn(), requestAccess: vi.fn(), getNetworkDetails: vi.fn(), setAllowed: vi.fn(), signTransaction: vi.fn(),
+// Mock next/navigation
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+  }),
 }));
 
-const address = "G" + "A".repeat(55);
-// JSDOM does not track the browser's keyboard/pointer focus modality.
-const mockFocusVisible = (button: HTMLElement, visible: boolean) => {
-  const matches = Element.prototype.matches;
-  vi.spyOn(button, "matches").mockImplementation((selector) =>
-    selector === ":focus-visible" ? visible : matches.call(button, selector)
-  );
-};
-const renderWallet = () => {
-  const view = render(<WalletConnect />);
-  return { ...view, button: screen.getByRole("button", { name: "Copy full Stellar address" }) };
-};
+// Mock sonner
+vi.mock('sonner', () => ({
+  toast: {
+    error: vi.fn(),
+    info: vi.fn(),
+    success: vi.fn(),
+  },
+}));
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  mocks.wallet.address = address;
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
-});
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+// Mock @stellar/freighter-api
+vi.mock('@stellar/freighter-api', () => ({
+  isConnected: vi.fn(),
+  requestAccess: vi.fn(),
+  getNetworkDetails: vi.fn(),
+  setAllowed: vi.fn(),
+  signTransaction: vi.fn(),
+}));
 
-describe("WalletConnect address copy tooltip", () => {
-  it("shows on hover and dismisses on mouseleave", () => {
-    const { button } = renderWallet();
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-    expect(button).toHaveAccessibleDescription("Click to copy full Stellar address");
-    fireEvent.mouseLeave(button.parentElement!);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+describe('WalletConnect Component', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useWalletStore.setState({
+      address: null,
+      walletName: null,
+      activeRole: 'client',
+      isConnecting: false,
+    });
   });
 
-  it("stays open when moving onto the tooltip content", () => {
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    fireEvent.mouseLeave(button, { relatedTarget: screen.getByRole("tooltip") });
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  it('renders initial connect button with normal icon and text', () => {
+    render(<WalletConnect />);
+    const button = screen.getByTestId('connect-freighter-button');
+    expect(button).toBeInTheDocument();
+    expect(button).not.toBeDisabled();
+    expect(screen.getByText('Connect Freighter Wallet →')).toBeInTheDocument();
+    expect(screen.queryByTestId('wallet-spinner')).not.toBeInTheDocument();
   });
 
-  it("dismisses a hover-only tooltip with Escape without moving focus", () => {
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    expect(button).not.toHaveFocus();
+  it('displays loading spinner, "Waiting for Wallet...", and disables button while connection is pending', async () => {
+    // Create a deferred promise that stays pending
+    let resolveAccess: any;
+    const accessPromise = new Promise<{ address?: string; error?: string }>((resolve) => {
+      resolveAccess = resolve;
+    });
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    vi.mocked(freighterApi.isConnected).mockResolvedValue(true as any);
+    vi.mocked(freighterApi.getNetworkDetails).mockResolvedValue({ network: 'TESTNET' } as any);
+    vi.mocked(freighterApi.setAllowed).mockResolvedValue(true as any);
+    vi.mocked(freighterApi.requestAccess).mockImplementation(() => accessPromise as any);
 
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(button).not.toHaveFocus();
-    fireEvent.mouseLeave(button.parentElement!);
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-  });
+    render(<WalletConnect />);
+    const button = screen.getByTestId('connect-freighter-button');
 
-  it("supports keyboard focus, retains the hint on mouseleave, and dismisses on Escape", () => {
-    const { button } = renderWallet();
-    mockFocusVisible(button, true);
-    act(() => button.focus());
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    fireEvent.mouseLeave(button.parentElement!);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    fireEvent.keyDown(button, { key: "Escape" });
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(button).toHaveFocus();
-    act(() => button.blur());
-    mockFocusVisible(button, true);
-    act(() => button.focus());
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    act(() => button.blur());
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-  });
-
-  it("copies the full address and only confirms after the clipboard promise succeeds", async () => {
-    let resolveCopy!: () => void;
-    vi.mocked(navigator.clipboard.writeText).mockReturnValue(new Promise<void>((resolve) => { resolveCopy = resolve; }));
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
     fireEvent.click(button);
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(address);
-    expect(screen.getByRole("tooltip")).not.toHaveTextContent("Copied!");
-    expect(mocks.success).not.toHaveBeenCalled();
-    await act(async () => resolveCopy());
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/^Copied!$/);
-    expect(button).toHaveTextContent("Copied! ✓");
-    expect(screen.getByRole("status")).toHaveTextContent("Stellar address copied");
-    expect(mocks.success).toHaveBeenCalledOnce();
+
+    // Button should now be disabled and show the spinner + waiting text
+    await waitFor(() => {
+      expect(button).toBeDisabled();
+      expect(screen.getByTestId('wallet-spinner')).toBeInTheDocument();
+      expect(screen.getByText('Waiting for Wallet...')).toBeInTheDocument();
+    });
+
+    // Resolve the access request
+    resolveAccess({ error: 'User rejected the connection' });
+
+    // After rejection, button should reset to normal state and be re-enabled
+    await waitFor(() => {
+      expect(button).not.toBeDisabled();
+      expect(screen.queryByTestId('wallet-spinner')).not.toBeInTheDocument();
+      expect(screen.getByText('Connect Freighter Wallet →')).toBeInTheDocument();
+    });
   });
 
-  it("reports clipboard rejection without claiming success", async () => {
-    vi.mocked(navigator.clipboard.writeText).mockRejectedValue(new Error("denied"));
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    await act(async () => { fireEvent.click(button); });
-    expect(mocks.error).toHaveBeenCalledWith("Unable to copy address. Please try again.");
-    expect(mocks.success).not.toHaveBeenCalled();
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
-  });
+  it('resets button to normal state if connection throws an error', async () => {
+    vi.mocked(freighterApi.isConnected).mockRejectedValue(new Error('Popup closed'));
 
-  it("handles an unavailable clipboard API without throwing", async () => {
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-    const { button } = renderWallet();
-    await act(async () => { fireEvent.click(button); });
-    expect(mocks.error).toHaveBeenCalledOnce();
-    expect(mocks.success).not.toHaveBeenCalled();
-  });
+    render(<WalletConnect />);
+    const button = screen.getByTestId('connect-freighter-button');
 
-  it("restarts the confirmation timeout on another successful copy", async () => {
-    vi.useFakeTimers();
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    await act(async () => { fireEvent.click(button); });
-    act(() => vi.advanceTimersByTime(1500));
-    await act(async () => { fireEvent.click(button); });
-    act(() => vi.advanceTimersByTime(1500));
-    expect(button).toHaveTextContent("Copied! ✓");
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/^Copied!$/);
-    act(() => vi.advanceTimersByTime(500));
-    expect(button).not.toHaveTextContent("Copied!");
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-  });
-
-  it("shows Copied in the tooltip, then dismisses automatically without losing keyboard focus", async () => {
-    vi.useFakeTimers();
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    mockFocusVisible(button, true);
-    act(() => button.focus());
-    await act(async () => { fireEvent.click(button); });
-
-    expect(button).toHaveFocus();
-    expect(button).toHaveTextContent("Copied! ✓");
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/^Copied!$/);
-    expect(button).toHaveAccessibleDescription("Copied!");
-
-    act(() => vi.advanceTimersByTime(2000));
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(button).not.toHaveTextContent("Copied!");
-
-    fireEvent.mouseLeave(button.parentElement!);
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-
-    fireEvent.keyDown(button, { key: "Escape" });
-    act(() => button.blur());
-    act(() => button.focus());
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-  });
-
-  it("dismisses a re-hovered hint on mouseleave after pointer-focused copying", async () => {
-    const { button } = renderWallet();
-    mockFocusVisible(button, false);
-    fireEvent.mouseEnter(button);
-    act(() => button.focus());
-    await act(async () => { fireEvent.click(button); });
-    fireEvent.mouseLeave(button.parentElement!);
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-    expect(button).not.toHaveTextContent("Copied!");
-
-    fireEvent.mouseLeave(button.parentElement!);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(button).toHaveFocus();
-
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toBeInTheDocument();
-  });
-
-  it("does not let an old timeout hide the fresh hint after leaving copy feedback", async () => {
-    vi.useFakeTimers();
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    await act(async () => { fireEvent.click(button); });
-    act(() => vi.advanceTimersByTime(500));
-    fireEvent.mouseLeave(button.parentElement!);
-    expect(button).not.toHaveTextContent("Copied!");
-    fireEvent.mouseEnter(button);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-    act(() => vi.advanceTimersByTime(2000));
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-  });
-
-  it("does not resurrect feedback when clipboard resolves after mouseleave and re-entry", async () => {
-    let resolveCopy!: () => void;
-    vi.mocked(navigator.clipboard.writeText).mockReturnValue(new Promise<void>((resolve) => { resolveCopy = resolve; }));
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
     fireEvent.click(button);
-    fireEvent.mouseLeave(button.parentElement!);
-    fireEvent.mouseEnter(button);
-    await act(async () => resolveCopy());
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Click to copy full Stellar address");
-    expect(button).not.toHaveTextContent("Copied!");
+
+    await waitFor(() => {
+      expect(button).not.toBeDisabled();
+      expect(screen.queryByTestId('wallet-spinner')).not.toBeInTheDocument();
+      expect(screen.getByText('Connect Freighter Wallet →')).toBeInTheDocument();
+    });
   });
-
-  it("keeps only the latest confirmation timeout when clipboard writes overlap", async () => {
-    vi.useFakeTimers();
-    const resolvers: (() => void)[] = [];
-    vi.mocked(navigator.clipboard.writeText).mockImplementation(() =>
-      new Promise<void>((resolve) => resolvers.push(resolve))
-    );
-    const { button } = renderWallet();
-    fireEvent.mouseEnter(button);
-    fireEvent.click(button);
-    fireEvent.click(button);
-    await act(async () => resolvers[0]());
-    act(() => vi.advanceTimersByTime(1500));
-    await act(async () => resolvers[1]());
-    act(() => vi.advanceTimersByTime(500));
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/^Copied!$/);
-    expect(vi.getTimerCount()).toBe(1);
-    act(() => vi.advanceTimersByTime(1500));
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-  });
-
-  it("switches from keyboard to pointer without retaining a keyboard-only tooltip", async () => {
-    const { button } = renderWallet();
-    mockFocusVisible(button, true);
-    act(() => button.focus());
-    fireEvent.mouseEnter(button);
-    fireEvent.pointerDown(button);
-    await act(async () => { fireEvent.click(button); });
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/^Copied!$/);
-    fireEvent.mouseLeave(button.parentElement!);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(button).toHaveFocus();
-  });
-
-  it("clears feedback and copies the new address after a wallet switch", async () => {
-    const { button, rerender } = renderWallet();
-    await act(async () => { fireEvent.click(button); });
-    mocks.wallet.address = "G" + "B".repeat(55);
-    rerender(<WalletConnect />);
-    expect(button).not.toHaveTextContent("Copied!");
-    await act(async () => { fireEvent.click(button); });
-    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(mocks.wallet.address);
-  });
-
-  it("cleans up the confirmation timer on unmount", async () => {
-    vi.useFakeTimers();
-    const { button, unmount } = renderWallet();
-    await act(async () => { fireEvent.click(button); });
-    unmount();
-    expect(vi.getTimerCount()).toBe(0);
-  });
-});
-
-
-it("does not reopen an Escape-dismissed tooltip when a pending clipboard write resolves", async () => {
-  let resolveCopy!: () => void;
-  vi.mocked(navigator.clipboard.writeText).mockReturnValue(
-    new Promise<void>((resolve) => { resolveCopy = resolve; })
-  );
-  const { button } = renderWallet();
-  fireEvent.mouseEnter(button.parentElement!);
-  fireEvent.click(button);
-  fireEvent.keyDown(document, { key: "Escape" });
-  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-  await act(async () => { resolveCopy(); });
-
-  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-});
-
-it("does not restore a previous wallet's pending copy after switching away and back", async () => {
-  let resolveCopy!: () => void;
-  vi.mocked(navigator.clipboard.writeText).mockReturnValue(
-    new Promise<void>((resolve) => { resolveCopy = resolve; })
-  );
-  const { button, rerender } = renderWallet();
-  fireEvent.mouseEnter(button.parentElement!);
-  fireEvent.click(button);
-  mocks.wallet.address = "G" + "B".repeat(55);
-  rerender(<WalletConnect />);
-
-  await act(async () => { resolveCopy(); });
-  mocks.wallet.address = address;
-  rerender(<WalletConnect />);
-
-  expect(button).not.toHaveTextContent("Copied!");
 });

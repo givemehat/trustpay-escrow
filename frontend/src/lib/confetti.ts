@@ -81,3 +81,6 @@ export function triggerCelebrationConfetti(options: ConfettiBurstOptions = {}): 
     return false;
   }
 }
+
+export const celebrateEscrow = (options?: ConfettiBurstOptions) => triggerCelebrationConfetti(options);
+

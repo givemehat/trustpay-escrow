@@ -1,5 +1,6 @@
 'use client';
 
+import Accordion from '@/components/Accordion';
 import React, { useState } from 'react';
 import WalletConnect from "@/components/WalletConnect";
 import Header from "@/components/Header";
@@ -363,30 +364,14 @@ export default function Home() {
             </h2>
           </div>
 
-          <div className="space-y-4">
-            {faqs.map((faq, idx) => (
-              <div
-                key={idx}
-                className="bg-[#18181b]/80 border border-[#27272a] rounded-2xl overflow-hidden transition-colors"
-              >
-                <button
-                  type="button"
-                  aria-expanded={openFaq === idx}
-                  aria-controls={openFaq === idx ? `faq-panel-${idx}` : undefined}
-                  onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
-                  className="w-full px-6 py-5 flex items-center justify-between text-left font-bold text-white hover:text-blue-400 transition-colors cursor-pointer"
-                >
-                  <span className="text-sm sm:text-base">{faq.q}</span>
-                  <span className="text-xl text-[#71717a]" aria-hidden="true">{openFaq === idx ? "−" : "+"}</span>
-                </button>
-                {openFaq === idx && (
-                  <div id={`faq-panel-${idx}`} className="px-6 pb-5 text-xs sm:text-sm text-[#a1a1aa] leading-relaxed border-t border-[#27272a]/40 pt-4">
-                    {faq.a}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          <Accordion
+            items={faqs.map((faq, idx) => ({
+              id: `faq-${idx}`,
+              title: faq.q,
+              content: faq.a,
+            }))}
+            type="single"
+          />
         </div>
       </section>
       </main>

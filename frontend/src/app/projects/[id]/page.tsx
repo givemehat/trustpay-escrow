@@ -1,28 +1,33 @@
 'use client';
 
 import { celebrateEscrow } from '@/lib/confetti';
-import { DeliverableChecksums } from '@/components/FileChecksumBadge';
-import { AccessibleModal } from '@/components/a11y/AccessibleModal';
 import { announcePolite } from '@/components/a11y/LiveAnnouncer';
+import { SorobanResourceInspectorModal } from '@/components/SorobanResourceInspectorModal';
+import { TransactionSpeedUpModal } from '@/components/TransactionSpeedUpModal';
+import { ProjectAuditLog } from '@/components/ProjectAuditLog';
+import { CalendarExportButton } from '@/components/CalendarExportButton';
+import { ContractSecurityModal } from '@/components/ContractSecurityModal';
+import { MutualCancellationModal } from '@/components/MutualCancellationModal';
 
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
 
 import { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
 import { DisputeEvidenceAttachments } from '@/components/DisputeEvidenceAttachments';
 import { downloadBlob } from '@/lib/share-card';
 import { ProjectDetailSkeleton } from '@/components/skeletons';
-import { ProjectAuditLog } from '@/components/ProjectAuditLog';
-import { CalendarExportButton } from '@/components/CalendarExportButton';
-import { ContractSecurityModal } from '@/components/ContractSecurityModal';
-import { MutualCancellationModal } from '@/components/MutualCancellationModal';
+import { TimelockCountdownBanner } from '@/components/TimelockCountdownBanner';
 import { useWalletStore } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
 import { CryptoId } from '@/components/ui/CryptoId';
 
+import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { useA11yAnnouncer } from '@/components/A11yLiveAnnouncer';
+import { MilestoneCertificateButton } from '@/components/MilestoneCertificateButton';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import {
   createProjectOnChain,
@@ -38,6 +43,17 @@ import {
   DEFAULT_ARBITER_ADDRESS,
   TxStage,
 } from '@/lib/soroban';
+import { useSep07Signer } from '@/hooks/useSep07Signer';
+import { DeliverableDiffViewer } from '@/components/DeliverableDiffViewer';
+import { SorobanEventStreamDrawer } from '@/components/SorobanEventStreamDrawer';
+import { MilestoneGanttChart } from '@/components/MilestoneGanttChart';
+import { DeliverableChecksums } from '@/components/FileChecksumBadge';
+import { GitRepoMilestoneConnector, GitDeliverableBadge } from '@/components/GitRepoMilestoneConnector';
+import {
+  RequestRevisionModal,
+  type RevisionRequestPayload,
+} from '@/components/RequestRevisionModal';
+import { ProjectReviewModal } from '@/components/ProjectReviewModal';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
@@ -45,6 +61,7 @@ export default function ProjectDetailsPage() {
   const projectId = params.id as string;
 
   const { address, activeRole } = useWalletStore();
+  const { announce } = useA11yAnnouncer();
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,7 +87,6 @@ export default function ProjectDetailsPage() {
   const [deliverableNotes, setDeliverableNotes] = useState('');
 
   const [activeRevisionModal, setActiveRevisionModal] = useState<Milestone | null>(null);
-  const [revisionNote, setRevisionNote] = useState('');
 
   const [activeApproveModal, setActiveApproveModal] = useState<Milestone | null>(null);
   const [activeDisputeModal, setActiveDisputeModal] = useState(false);
@@ -80,11 +96,73 @@ export default function ProjectDetailsPage() {
   const [resolveClientAmount, setResolveClientAmount] = useState<number | ''>('');
   const [resolveFreelancerAmount, setResolveFreelancerAmount] = useState<number | ''>('');
 
+  // Drag-and-drop reorder state for milestone cards (#314)
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduceMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduceMotion(e.matches);
+    mq.addEventListener?.('change', handler);
+    return () => mq.removeEventListener?.('change', handler);
+  }, []);
+
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewContext, setReviewContext] = useState<{
+    revieweeAddress: string;
+    revieweeRole: 'client' | 'freelancer';
+    reviewerRole: 'client' | 'freelancer';
+  } | null>(null);
+
+  const [stalledTransaction, setStalledTransaction] = useState<{
+    id: string;
+    innerTxXdr: string;
+    description: string;
+    submittedAt: string;
+    projectId?: string;
+  } | null>(null);
+
   const [showFundEscrowModal, setShowFundEscrowModal] = useState(false);
   const [fundFreelancerAddress, setFundFreelancerAddress] = useState('');
+  const [showDeliverableDiff, setShowDeliverableDiff] = useState(false);
+
+  const { signWithSep07, sep07Modal } = useSep07Signer();
+
+  // Announce async blockchain state changes to screen readers (#309)
+  useEffect(() => {
+    if (!txState.isOpen || !txState.message) return;
+    announce(
+      `Escrow transaction ${txState.stage}: ${txState.message}`,
+      txState.stage === 'error' ? 'assertive' : 'polite'
+    );
+  }, [txState.isOpen, txState.stage, txState.message, txState.error, announce]);
 
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [showMutualCancelModal, setShowMutualCancelModal] = useState(false);
+  const [resourceInspectorTx, setResourceInspectorTx] = useState<{
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  } | null>(null);
+
+  // #305 — pre-flight simulation of the same approve_milestone invocation used
+  // by the real Approve action, but WITHOUT signing or submitting anything.
+  const openResourceInspector = () => {
+    const onChainId = project?.project_id_onchain ?? 1;
+    setResourceInspectorTx({
+      contractAddress: project?.contract_id || DEFAULT_ESCROW_CONTRACT_ID,
+      functionName: 'approve_milestone',
+      args: [
+        nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+        nativeToScVal(0, { type: 'u32' }),
+        xdr.ScVal.scvVoid(), // platform address (same fallback as approveMilestone)
+      ],
+      description: 'Approve & Release Milestone #1',
+    });
+  };
 
   useEffect(() => {
     if (!txState.isOpen) return;
@@ -93,6 +171,25 @@ export default function ProjectDetailsPage() {
       announcePolite(statusText);
     }
   }, [txState.isOpen, txState.stage, txState.message, txState.error]);
+
+  // Escape mirrors each modal's own Cancel button.
+  useEscapeKey(() => {
+    setActiveDeliverableModal(null);
+    setDeliverableHash('');
+    setDeliverableUrl('');
+    setDeliverableNotes('');
+  }, Boolean(activeDeliverableModal));
+  useEscapeKey(() => setActiveRevisionModal(null), Boolean(activeRevisionModal));
+  useEscapeKey(() => setActiveApproveModal(null), Boolean(activeApproveModal));
+  useEscapeKey(() => setShowFundEscrowModal(false), showFundEscrowModal);
+  useEscapeKey(() => setActiveDisputeModal(false), activeDisputeModal);
+  useEscapeKey(() => setActiveResolveModal(false), activeResolveModal);
+  // The overlay stays on the stack while a transaction runs, so Escape cannot close the modal under it.
+  useEscapeKey(() => {
+    if (txState.stage === 'success' || txState.stage === 'error') {
+      setTxState((prev) => ({ ...prev, isOpen: false }));
+    }
+  }, txState.isOpen);
 
   const computeDeliverableHash = async (input: string): Promise<string> => {
     const trimmed = input.trim();
@@ -142,19 +239,61 @@ export default function ProjectDetailsPage() {
     fetchProject();
   }, [projectId]);
 
-  if (loading) {
-    return (
-      <main id="main-content" tabIndex={-1}>
-        <ProjectDetailSkeleton />
-      </main>
+  // Prompt for review when project is completed (#312)
+  useEffect(() => {
+    if (!project || project.status !== 'completed' || !address) return;
+    
+    const isClientUser = Boolean(
+      address && (
+        (project.client_address && address.toUpperCase() === project.client_address.toUpperCase()) ||
+        activeRole === 'client'
+      )
     );
+    const isFreelancerUser = Boolean(
+      address && (
+        (project.freelancer_address && address.toUpperCase() === project.freelancer_address.toUpperCase()) ||
+        activeRole === 'freelancer'
+      )
+    );
+
+    // Check if user has already reviewed (would need API call in real implementation)
+    // For now, show prompt if user is a participant and project is completed
+    if (isClientUser || isFreelancerUser) {
+      const reviewedKey = `reviewed-${projectId}-${address}`;
+      const hasReviewed = window.localStorage.getItem(reviewedKey);
+      
+      if (!hasReviewed) {
+        // Small delay to let UI settle
+        const timer = setTimeout(() => {
+          if (isClientUser) {
+            setReviewContext({
+              revieweeAddress: project.freelancer_address || '',
+              revieweeRole: 'freelancer',
+              reviewerRole: 'client',
+            });
+          } else if (isFreelancerUser) {
+            setReviewContext({
+              revieweeAddress: project.client_address || '',
+              revieweeRole: 'client',
+              reviewerRole: 'freelancer',
+            });
+          }
+          setShowReviewModal(true);
+        }, 1500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [project, address, activeRole, projectId]);
+
+  if (loading) {
+    return <ProjectDetailSkeleton />;
   }
 
   if (!project) {
     return (
-      <main id="main-content" tabIndex={-1} className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
-        <div className="w-16 h-16 bg-red-500/10 text-red-400 rounded-2xl flex items-center justify-center mb-4 border border-red-500/20" aria-hidden="true">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8" aria-hidden="true">
+      <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-16 h-16 bg-red-500/10 text-red-400 rounded-2xl flex items-center justify-center mb-4 border border-red-500/20">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
           </svg>
         </div>
@@ -165,7 +304,7 @@ export default function ProjectDetailsPage() {
         <Button onClick={() => router.push('/')} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl">
           Return Home
         </Button>
-      </main>
+      </div>
     );
   }
 
@@ -191,6 +330,66 @@ export default function ProjectDetailsPage() {
   );
 
   const hasOnChainEscrow = Boolean(project.project_id_onchain !== undefined && project.project_id_onchain !== null);
+  const editableMilestones = Boolean(project?.status === 'draft' && isClient);
+
+  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
+    setDraggedIndex(index);
+    e.currentTarget.style.opacity = reduceMotion ? '1' : '0.4';
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === index) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverIndex(null);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>, targetIndex: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === targetIndex) return;
+    e.preventDefault();
+    const fromIndex = draggedIndex;
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+
+    const milestones = [...(project?.milestones || [])].sort((a, b) => a.milestone_index - b.milestone_index);
+    const [removed] = milestones.splice(fromIndex, 1);
+    milestones.splice(targetIndex, 0, removed);
+    const reordered = milestones.map((m, i) => ({ ...m, milestone_index: i }));
+    setProject((prev) => (prev ? { ...prev, milestones: reordered } : prev));
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await Promise.all(
+        reordered.map((m, i) =>
+          authFetch(`${apiUrl}/api/milestones/${m.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ milestone_index: i }),
+          })
+        )
+      );
+      toast.success('Milestone order updated');
+    } catch (err: any) {
+      toast.error(`Failed to persist order: ${err.message || err}`);
+      await fetchProject();
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+    e.currentTarget.style.opacity = '1';
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
   const tokenSymbol = project.token || 'USDC';
 
   // 1. Client Action: Fund Escrow on Soroban
@@ -324,14 +523,10 @@ export default function ProjectDetailsPage() {
   };
 
   // 2b. Client Action: Request Milestone Revision on-chain
-  const handleRequestRevision = async () => {
+  const handleRequestRevision = async (payload: RevisionRequestPayload) => {
     if (!activeRevisionModal) return;
     if (!address) {
       toast.error('Please connect your client wallet first.');
-      return;
-    }
-    if (!revisionNote.trim()) {
-      toast.error('Please provide specific revision instructions or feedback.');
       return;
     }
 
@@ -366,14 +561,20 @@ export default function ProjectDetailsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          revision_note: revisionNote.trim(),
+          revision_note: payload.formattedNote,
+          revision_checklist: payload.checklist,
+          revision_attachments: payload.attachments.map((attachment) => ({
+            name: attachment.name,
+            size: attachment.size,
+            type: attachment.type,
+            url: attachment.url,
+          })),
           actor_address: address,
         }),
       });
 
       toast.success('Revision requested on-chain! Timelock paused while freelancer works on updates.');
       setActiveRevisionModal(null);
-      setRevisionNote('');
       await fetchProject();
     } catch (err: any) {
       setTxState((prev) => ({ ...prev, stage: 'error', error: err.message || String(err) }));
@@ -381,11 +582,36 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  // Drag-to-reschedule on draft timelines (#154). Draft dates are local until
+  // the escrow is funded, so the updated project state stays on this page.
+  const handleRescheduleMilestone = (
+    milestone: Milestone,
+    startDate: string,
+    dueDate: string
+  ) => {
+    setProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            milestones: (prev.milestones || []).map((item) =>
+              item.id === milestone.id
+                ? { ...item, start_date: startDate, due_date: dueDate }
+                : item
+            ),
+          }
+        : prev
+    );
+    toast.success(
+      `${milestone.title} moved to ${new Date(startDate).toLocaleDateString()} – ${new Date(dueDate).toLocaleDateString()}`
+    );
+  };
+
   const celebrateFinalRelease = (released: Milestone) => {
     const milestones = project?.milestones ?? [];
-    if (milestones.some((milestone) => milestone.id === released.id) && milestones.every((milestone) =>
-      milestone.id === released.id || milestone.status === 'approved'
-    )) {
+    if (
+      milestones.some((milestone) => milestone.id === released.id) &&
+      milestones.every((milestone) => milestone.id === released.id || milestone.status === 'approved')
+    ) {
       celebrateEscrow();
     }
   };
@@ -608,6 +834,64 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  // 5b. Arbiter Action: Resolve Dispute via SEP-0007 mobile wallet QR signing
+  const handleResolveDisputeSep07 = async () => {
+    if (!address) {
+      toast.error('Please connect the arbiter wallet first.');
+      return;
+    }
+
+    const cAmt = Number(resolveClientAmount) || 0;
+    const fAmt = Number(resolveFreelancerAmount) || 0;
+    if (cAmt + fAmt <= 0) {
+      toast.error('Please enter non-zero settlement amounts.');
+      return;
+    }
+
+    const onChainId = project.project_id_onchain ?? 1;
+    const args: xdr.ScVal[] = [
+      nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+      nativeToScVal(BigInt(Math.round(cAmt * 10_000_000)), { type: 'i128' }),
+      nativeToScVal(BigInt(Math.round(fAmt * 10_000_000)), { type: 'i128' }),
+      xdr.ScVal.scvVoid(),
+    ];
+
+    setTxState({
+      isOpen: true,
+      stage: 'signing',
+      message: 'Preparing SEP-0007 QR code for mobile wallet signing…',
+    });
+
+    try {
+      const res = await signWithSep07({
+        callerAddress: address,
+        functionName: 'resolve_dispute',
+        args,
+      });
+
+      setTxState((prev) => ({
+        ...prev,
+        stage: 'success',
+        txHash: res.txHash,
+        message: 'Dispute settlement signed via mobile wallet and broadcast on Stellar!',
+      }));
+
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await authFetch(`${apiUrl}/api/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' }),
+      });
+
+      toast.success('Dispute resolved via mobile wallet!');
+      setActiveResolveModal(false);
+      await fetchProject();
+    } catch (err: any) {
+      setTxState((prev) => ({ ...prev, isOpen: false }));
+      toast.error(`Mobile signing failed: ${err?.message || err}`);
+    }
+  };
+
   const handleDisputeTimeout = async (split5050: boolean) => {
     if (!address) {
       toast.error('Please connect your wallet first.');
@@ -661,7 +945,7 @@ export default function ProjectDetailsPage() {
   };
 
   return (
-    <main id="main-content" tabIndex={-1} className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-24">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-24">
       {/* Top Banner Gradient */}
       <div className="h-64 bg-gradient-to-r from-indigo-900 via-slate-900 to-purple-950 relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-500/20 via-transparent to-transparent"></div>
@@ -722,6 +1006,15 @@ export default function ProjectDetailsPage() {
             >
               <span>🔒</span>
               <span>Contract Security</span>
+            </button>
+
+            <button
+              onClick={openResourceInspector}
+              className="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/20 hover:text-white transition-all flex items-center gap-1.5"
+              title="Pre-flight Soroban simulation: CPU, memory & rent usage before signing"
+            >
+              <span>🔬</span>
+              <span>Inspect Resources</span>
             </button>
 
             {(isClient || isFreelancer) && project.status === 'in_progress' && (
@@ -934,19 +1227,71 @@ export default function ProjectDetailsPage() {
             )}
           </div>
 
+          {/* Active Timelock Countdown Banners for Submitted Milestones */}
+          {project.milestones
+            ?.filter((m) => m.status === 'submitted')
+            .map((submittedM) => (
+              <TimelockCountdownBanner
+                key={`timelock-${submittedM.id}`}
+                milestone={submittedM}
+                project={project}
+                onApprove={(m) => setActiveApproveModal(m)}
+                onRequestRevision={(m) => {
+                  setActiveRevisionModal(m);
+                }}
+              />
+            ))}
+
           {!project.milestones || project.milestones.length === 0 ? (
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-10 text-center flex flex-col items-center justify-center">
               <p className="text-slate-300 font-medium">No milestones created for this project.</p>
             </div>
           ) : (
-            <div className="grid gap-4">
+            <div className="grid gap-4 relative">
               {project.milestones
                 .sort((a, b) => a.milestone_index - b.milestone_index)
                 .map((m, idx) => (
-                  <div
-                    key={m.id || idx}
-                    className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6"
-                  >
+                  <React.Fragment key={m.id || idx}>
+                    {/* Drop indicator line above card when dragging over */}
+                    {editableMilestones && dragOverIndex === idx && draggedIndex !== null && draggedIndex !== idx && (
+                      <div
+                        className="absolute left-0 right-0 h-2 -top-1 pointer-events-none"
+                        style={{ zIndex: 50 }}
+                        aria-hidden="true"
+                      >
+                        <div
+                          className="h-full w-full rounded-t-xl"
+                          style={{
+                            background: 'linear-gradient(90deg, transparent, #3b82f6, transparent)',
+                            boxShadow: '0 0 12px 2px #3b82f6, 0 0 24px 4px #3b82f640',
+                            opacity: reduceMotion ? 1 : 0.9,
+                            transform: reduceMotion ? 'none' : 'scaleY(1.5)',
+                            transition: reduceMotion ? 'none' : 'transform 120ms ease-out, opacity 120ms ease-out',
+                          }}
+                        />
+                      </div>
+                    )}
+                    {/* Milestone card with drag-and-drop */}
+                    <div
+                      key={m.id || idx}
+                      draggable={editableMilestones}
+                      onDragStart={(e) => handleDragStart(e, idx)}
+                      onDragOver={(e) => handleDragOver(e, idx)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, idx)}
+                      onDragEnd={handleDragEnd}
+                      className={`bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative ${
+                        editableMilestones && draggedIndex === idx && !reduceMotion
+                          ? 'scale-[1.02] shadow-[0_0_24px_#3b82f680] ring-1 ring-blue-500/40 z-10'
+                          : ''
+                      }`}
+                      style={{
+                        transition: editableMilestones && !reduceMotion
+                          ? 'transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out'
+                          : 'none',
+                        opacity: editableMilestones && draggedIndex !== null && draggedIndex !== idx && !reduceMotion ? 0.6 : 1,
+                      }}
+                    >
                     <div className="space-y-2 flex-1">
                       <div className="flex items-center gap-3 flex-wrap">
                         <span className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold flex items-center justify-center">
@@ -1004,16 +1349,19 @@ export default function ProjectDetailsPage() {
                       )}
 
                       {m.deliverable_url && (
-                        <div className="pl-10 pt-0.5 text-xs text-indigo-400 flex items-center gap-2">
-                          <span className="text-slate-500 font-medium">Deliverable Link:</span>
-                          <a
-                            href={m.deliverable_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
-                          >
-                            {m.deliverable_url}
-                          </a>
+                        <div className="pl-10 pt-1 flex flex-wrap items-center gap-2">
+                          <div className="text-xs text-indigo-400 flex items-center gap-2">
+                            <span className="text-slate-500 font-medium">Deliverable Link:</span>
+                            <a
+                              href={m.deliverable_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
+                            >
+                              {m.deliverable_url}
+                            </a>
+                          </div>
+                          <GitDeliverableBadge url={m.deliverable_url} commitHash={m.deliverable_hash} />
                         </div>
                       )}
 
@@ -1116,13 +1464,17 @@ export default function ProjectDetailsPage() {
                         )}
 
                         {m.status === 'approved' && (
-                          <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
-                            <span>✓</span> Released On-Chain
-                          </span>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
+                              <span>✓</span> Released On-Chain
+                            </span>
+                            <MilestoneCertificateButton project={project} milestone={m} txHash={project.tx_hash} />
+                          </div>
                         )}
                       </div>
                     </div>
                   </div>
+                  </React.Fragment>
                 ))}
             </div>
           )}
@@ -1130,20 +1482,9 @@ export default function ProjectDetailsPage() {
       </div>
 
       {/* MODAL 1: Freelancer Submit Deliverable Modal */}
-      <AccessibleModal
-        isOpen={Boolean(activeDeliverableModal)}
-        onClose={() => {
-          setActiveDeliverableModal(null);
-          setDeliverableHash('');
-          setDeliverableUrl('');
-          setDeliverableNotes('');
-        }}
-        ariaLabel={activeDeliverableModal ? `Submit deliverable for ${activeDeliverableModal.title}` : 'Submit deliverable'}
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        {activeDeliverableModal && (
-          <>
+      {activeDeliverableModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
                 Milestone #{activeDeliverableModal.milestone_index + 1} Deliverable
@@ -1156,8 +1497,8 @@ export default function ProjectDetailsPage() {
 
             <div className="space-y-4 text-xs">
               <div>
-                <div className="text-slate-300 font-semibold mb-1.5 flex justify-between items-center">
-                  <label htmlFor="deliverable-hash-input">Cryptographic Deliverable Hash (IPFS CID or SHA-256)</label>
+                <label className="block text-slate-300 font-semibold mb-1.5 flex justify-between items-center">
+                  <span>Cryptographic Deliverable Hash (IPFS CID or SHA-256)</span>
                   <button
                     type="button"
                     onClick={async () => {
@@ -1170,9 +1511,8 @@ export default function ProjectDetailsPage() {
                   >
                     Auto-calculate SHA-256
                   </button>
-                </div>
+                </label>
                 <input
-                  id="deliverable-hash-input"
                   type="text"
                   value={deliverableHash}
                   onChange={(e) => setDeliverableHash(e.target.value)}
@@ -1182,21 +1522,20 @@ export default function ProjectDetailsPage() {
               </div>
 
               <div>
-                <label htmlFor="deliverable-url-input" className="block text-slate-300 font-semibold mb-1.5">Deliverable URL / Repository PR / IPFS Gateway</label>
-                <input
-                  id="deliverable-url-input"
-                  type="text"
-                  value={deliverableUrl}
-                  onChange={(e) => setDeliverableUrl(e.target.value)}
-                  placeholder="https://github.com/organization/repo/pull/1 or https://ipfs.io/ipfs/..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
+                <GitRepoMilestoneConnector
+                  initialUrl={deliverableUrl}
+                  onConnectorChange={({ url, metadata, isValid }) => {
+                    setDeliverableUrl(url);
+                    if (isValid && metadata) {
+                      setDeliverableHash(metadata.latestCommitHash);
+                    }
+                  }}
                 />
               </div>
 
               <div>
-                <label htmlFor="deliverable-notes-input" className="block text-slate-300 font-semibold mb-1.5">Submission Notes & Completion Summary</label>
+                <label className="block text-slate-300 font-semibold mb-1.5">Submission Notes & Completion Summary</label>
                 <textarea
-                  id="deliverable-notes-input"
                   rows={3}
                   value={deliverableNotes}
                   onChange={(e) => setDeliverableNotes(e.target.value)}
@@ -1204,6 +1543,28 @@ export default function ProjectDetailsPage() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
                 />
               </div>
+
+              {(activeDeliverableModal.deliverable_notes || deliverableNotes) && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeliverableDiff((v) => !v)}
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 underline font-semibold"
+                  >
+                    {showDeliverableDiff ? 'Hide revision diff' : 'Compare with previous submission'}
+                  </button>
+                  {showDeliverableDiff && (
+                    <div className="mt-2">
+                      <DeliverableDiffViewer
+                        previousText={activeDeliverableModal.deliverable_notes || ''}
+                        currentText={deliverableNotes}
+                        previousLabel="Previous deliverable"
+                        currentLabel="New submission"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
@@ -1214,6 +1575,7 @@ export default function ProjectDetailsPage() {
                   setDeliverableHash('');
                   setDeliverableUrl('');
                   setDeliverableNotes('');
+                  setShowDeliverableDiff(false);
                 }}
                 className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
               >
@@ -1226,83 +1588,25 @@ export default function ProjectDetailsPage() {
                 Sign & Submit via Freighter ↗
               </Button>
             </div>
-          </>
-        )}
-      </AccessibleModal>
+          </div>
+        </div>
+      )}
 
-      {/* MODAL 1b: Client Request Revision Modal */}
-      <AccessibleModal
+      {/* MODAL 1b: Client Request Revision Modal (#153) */}
+      <RequestRevisionModal
+        key={activeRevisionModal?.id || 'closed-revision'}
         isOpen={Boolean(activeRevisionModal)}
-        onClose={() => {
-          setActiveRevisionModal(null);
-          setRevisionNote('');
-        }}
-        ariaLabel={activeRevisionModal ? `Request revision for ${activeRevisionModal.title}` : 'Request revision'}
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        {activeRevisionModal && (
-          <>
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                Formal Revision Request
-              </span>
-              <h3 className="text-xl font-bold text-white mt-1">{activeRevisionModal.title}</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Invoking <code className="text-amber-300">request_revision</code> on Soroban resets the 7-day auto-release timelock, transitions the status to <code className="text-amber-300">In Revision</code>, and decrements remaining revisions (
-                <strong>
-                  {Math.max(0, (activeRevisionModal.revisions_remaining ?? activeRevisionModal.revision_limit ?? 2) - 1)}
-                </strong>{' '}
-                revisions will remain).
-              </p>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              <div>
-                <label htmlFor="revision-feedback-input" className="block text-slate-300 font-semibold mb-1.5">Revision Feedback & Required Adjustments *</label>
-                <textarea
-                  id="revision-feedback-input"
-                  rows={4}
-                  value={revisionNote}
-                  onChange={(e) => setRevisionNote(e.target.value)}
-                  placeholder="Detail specifically what changes, bug fixes, or missing requirements are needed before approval..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setActiveRevisionModal(null);
-                  setRevisionNote('');
-                }}
-                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleRequestRevision}
-                className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
-              >
-                Sign & Request Revision 🔄
-              </Button>
-            </div>
-          </>
-        )}
-      </AccessibleModal>
+        milestone={activeRevisionModal}
+        tokenSymbol={tokenSymbol}
+        isSubmitting={txState.isOpen}
+        onClose={() => setActiveRevisionModal(null)}
+        onSubmit={handleRequestRevision}
+      />
 
       {/* MODAL 2: Client Approve Milestone Modal */}
-      <AccessibleModal
-        isOpen={Boolean(activeApproveModal)}
-        onClose={() => setActiveApproveModal(null)}
-        ariaLabel={activeApproveModal ? `Approve milestone ${activeApproveModal.title}` : 'Approve milestone'}
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        {activeApproveModal && (
-          <>
+      {activeApproveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Release Milestone Payment</span>
               <h3 className="text-xl font-bold text-white mt-1">{activeApproveModal.title}</h3>
@@ -1348,247 +1652,259 @@ export default function ProjectDetailsPage() {
                 Confirm On-Chain Release ↗
               </Button>
             </div>
-          </>
-        )}
-      </AccessibleModal>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 3: Fund Escrow on Soroban Modal */}
-      <AccessibleModal
-        isOpen={showFundEscrowModal}
-        onClose={() => setShowFundEscrowModal(false)}
-        ariaLabel="Lock Escrow Deposit"
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        <div>
-          <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Soroban Smart Contract Funding</span>
-          <h3 className="text-xl font-bold text-white mt-1">Lock Escrow Deposit</h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Deposit {project.budget} {tokenSymbol} into the TrustPay Soroban escrow contract on Stellar Testnet.
-          </p>
-        </div>
+      {showFundEscrowModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+            <div>
+              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Soroban Smart Contract Funding</span>
+              <h3 className="text-xl font-bold text-white mt-1">Lock Escrow Deposit</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Deposit {project.budget} {tokenSymbol} into the TrustPay Soroban escrow contract on Stellar Testnet.
+              </p>
+            </div>
 
-        <div className="space-y-4 text-xs">
-          <div>
-            <label htmlFor="fund-freelancer-input" className="block text-slate-300 font-semibold mb-1.5">Designated Freelancer Stellar Address (G...)</label>
-            <input
-              id="fund-freelancer-input"
-              type="text"
-              value={fundFreelancerAddress}
-              onChange={(e) => setFundFreelancerAddress(e.target.value)}
-              placeholder="G..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 font-mono tracking-tight text-sm focus:outline-none focus:border-indigo-500"
-            />
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Designated Freelancer Stellar Address (G...)</label>
+                <input
+                  type="text"
+                  value={fundFreelancerAddress}
+                  onChange={(e) => setFundFreelancerAddress(e.target.value)}
+                  placeholder="G..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 font-mono tracking-tight text-sm focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-slate-400">
+                <div className="flex justify-between">
+                  <span>Contract Target:</span>
+                  <CryptoId
+                    value={DEFAULT_ESCROW_CONTRACT_ID}
+                    title={DEFAULT_ESCROW_CONTRACT_ID}
+                    className="text-indigo-300 truncate max-w-[200px]"
+                  />
+                </div>
+                <div className="flex justify-between">
+                  <span>Total Escrow Deposit:</span>
+                  <span className="font-bold text-white">{project.budget} {tokenSymbol}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Milestones Count:</span>
+                  <span className="text-slate-300">{project.milestones?.length || 1}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                onClick={() => setShowFundEscrowModal(false)}
+                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleFundEscrowOnChain}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold px-5"
+              >
+                Sign & Lock Escrow ↗
+              </Button>
+            </div>
           </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-slate-400">
-            <div className="flex justify-between">
-              <span>Contract Target:</span>
-              <CryptoId
-                value={DEFAULT_ESCROW_CONTRACT_ID}
-                title={DEFAULT_ESCROW_CONTRACT_ID}
-                className="text-indigo-300 truncate max-w-[200px]"
-              />
-            </div>
-            <div className="flex justify-between">
-              <span>Total Escrow Deposit:</span>
-              <span className="font-bold text-white">{project.budget} {tokenSymbol}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Milestones Count:</span>
-              <span className="text-slate-300">{project.milestones?.length || 1}</span>
-            </div>
-          </div>
         </div>
-
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-          <Button
-            variant="outline"
-            onClick={() => setShowFundEscrowModal(false)}
-            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleFundEscrowOnChain}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold px-5"
-          >
-            Sign & Lock Escrow ↗
-          </Button>
-        </div>
-      </AccessibleModal>
+      )}
 
       {/* MODAL 4: Raise Dispute Modal */}
-      <AccessibleModal
-        isOpen={activeDisputeModal}
-        onClose={() => setActiveDisputeModal(false)}
-        ariaLabel="Initiate Dispute on Stellar"
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-red-500/30 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        <div>
-          <span className="text-xs font-bold uppercase tracking-wider text-red-400">Formal Arbitration Request</span>
-          <h3 className="text-xl font-bold text-white mt-1">Initiate Dispute on Stellar</h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Calling <code className="text-red-300">raise_dispute</code> transitions the smart contract to Disputed, freezing unreleased funds until the arbiter rules.
-          </p>
-        </div>
+      {activeDisputeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-red-500/30 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+            <div>
+              <span className="text-xs font-bold uppercase tracking-wider text-red-400">Formal Arbitration Request</span>
+              <h3 className="text-xl font-bold text-white mt-1">Initiate Dispute on Stellar</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Calling <code className="text-red-300">raise_dispute</code> transitions the smart contract to Disputed, freezing unreleased funds until the arbiter rules.
+              </p>
+            </div>
 
-        <div className="space-y-4 text-xs">
-          <div>
-            <label htmlFor="dispute-reason-input" className="block text-slate-300 font-semibold mb-1.5">Reason for Dispute</label>
-            <textarea
-              id="dispute-reason-input"
-              rows={3}
-              value={disputeReason}
-              onChange={(e) => setDisputeReason(e.target.value)}
-              placeholder="Detail the failure to deliver agreed specifications, missed deadlines, or communication breakdown..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
-            />
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Reason for Dispute</label>
+                <textarea
+                  rows={3}
+                  value={disputeReason}
+                  onChange={(e) => setDisputeReason(e.target.value)}
+                  placeholder="Detail the failure to deliver agreed specifications, missed deadlines, or communication breakdown..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
+                />
+              </div>
+              <DisputeEvidenceAttachments />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                onClick={() => setActiveDisputeModal(false)}
+                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleRaiseDispute}
+                className="bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold px-5"
+              >
+                Sign & Raise Dispute ↗
+              </Button>
+            </div>
           </div>
-          <DisputeEvidenceAttachments />
         </div>
-
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-          <Button
-            variant="outline"
-            onClick={() => setActiveDisputeModal(false)}
-            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleRaiseDispute}
-            className="bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold px-5"
-          >
-            Sign & Raise Dispute ↗
-          </Button>
-        </div>
-      </AccessibleModal>
+      )}
 
       {/* MODAL 5: Arbiter Resolve Dispute Modal */}
-      <AccessibleModal
-        isOpen={activeResolveModal}
-        onClose={() => setActiveResolveModal(false)}
-        ariaLabel="Resolve Escrow Allocation"
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl"
-      >
-        <div>
-          <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Arbiter Settlement Verdict</span>
-          <h3 className="text-xl font-bold text-white mt-1">Resolve Escrow Allocation</h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Enter the settlement amounts. Total allocation cannot exceed the project budget ({project.budget} {tokenSymbol}).
-          </p>
-        </div>
+      {activeResolveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
+            <div>
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-400">Arbiter Settlement Verdict</span>
+              <h3 className="text-xl font-bold text-white mt-1">Resolve Escrow Allocation</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Enter the settlement amounts. Total allocation cannot exceed the project budget ({project.budget} {tokenSymbol}).
+              </p>
+            </div>
 
-        <div className="space-y-4 text-xs">
-          <div>
-            <label htmlFor="resolve-client-amount" className="block text-slate-300 font-semibold mb-1.5">Client Refund Amount ({tokenSymbol})</label>
-            <input
-              id="resolve-client-amount"
-              type="number"
-              value={resolveClientAmount}
-              onChange={(e) => setResolveClientAmount(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="Amount refunded to client"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-            />
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Client Refund Amount ({tokenSymbol})</label>
+                <input
+                  type="number"
+                  value={resolveClientAmount}
+                  onChange={(e) => setResolveClientAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="Amount refunded to client"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1.5">Freelancer Payout Amount ({tokenSymbol})</label>
+                <input
+                  type="number"
+                  value={resolveFreelancerAmount}
+                  onChange={(e) => setResolveFreelancerAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="Amount paid to freelancer"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                onClick={() => setActiveResolveModal(false)}
+                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleResolveDispute}
+                className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
+              >
+                Execute Ruling on Stellar ↗
+              </Button>
+              <Button
+                onClick={handleResolveDisputeSep07}
+                variant="outline"
+                className="border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 rounded-xl text-xs font-bold px-5"
+                title="Sign with a mobile wallet via SEP-0007 QR code — no browser extension needed"
+              >
+                Sign via Mobile QR
+              </Button>
+            </div>
           </div>
-
-          <div>
-            <label htmlFor="resolve-freelancer-amount" className="block text-slate-300 font-semibold mb-1.5">Freelancer Payout Amount ({tokenSymbol})</label>
-            <input
-              id="resolve-freelancer-amount"
-              type="number"
-              value={resolveFreelancerAmount}
-              onChange={(e) => setResolveFreelancerAmount(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="Amount paid to freelancer"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-            />
-          </div>
         </div>
+      )}
 
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-          <Button
-            variant="outline"
-            onClick={() => setActiveResolveModal(false)}
-            className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleResolveDispute}
-            className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
-          >
-            Execute Ruling on Stellar ↗
-          </Button>
-        </div>
-      </AccessibleModal>
+      {sep07Modal}
+      {project.contract_id && <SorobanEventStreamDrawer contractId={project.contract_id} />}
 
       {/* TRANSACTION PROGRESS OVERLAY MODAL */}
-      <AccessibleModal
-        isOpen={txState.isOpen}
-        onClose={() => {
-          if (txState.stage === 'success' || txState.stage === 'error') {
-            setTxState((prev) => ({ ...prev, isOpen: false }));
-          }
-        }}
-        closeOnBackdropClick={false}
-        role={txState.stage === 'error' ? 'alertdialog' : 'dialog'}
-        ariaLabel="Transaction progress"
-        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in"
-        dialogClassName="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl"
-      >
-        <div role={txState.stage === 'error' ? 'alert' : 'status'} aria-live={txState.stage === 'error' ? 'assertive' : 'polite'}>
-          {txState.stage === 'error' ? (
-            <div className="w-14 h-14 bg-red-500/10 text-red-400 border border-red-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl mb-4" aria-hidden="true">
-              ✕
-            </div>
-          ) : txState.stage === 'success' ? (
-            <div className="w-14 h-14 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl mb-4" aria-hidden="true">
-              ✓
-            </div>
-          ) : (
-            <div className="w-14 h-14 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4" aria-hidden="true">
-              <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
-            </div>
-          )}
+      {txState.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+            {txState.stage === 'error' ? (
+              <div className="w-14 h-14 bg-red-500/10 text-red-400 border border-red-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl">
+                ✕
+              </div>
+            ) : txState.stage === 'success' ? (
+              <div className="w-14 h-14 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto text-2xl">
+                ✓
+              </div>
+            ) : (
+              <div className="w-14 h-14 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-2xl flex items-center justify-center mx-auto">
+                <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            )}
 
-          <h3 className="text-lg font-bold text-white capitalize">
-            {txState.stage === 'simulating' && 'Simulating Contract Call...'}
-            {txState.stage === 'signing' && 'Awaiting Wallet Signature...'}
-            {txState.stage === 'submitting' && 'Broadcasting to Stellar...'}
-            {txState.stage === 'polling' && 'Confirming on Ledger...'}
-            {txState.stage === 'success' && 'Transaction Confirmed!'}
-            {txState.stage === 'error' && 'Transaction Error'}
-            {txState.stage === 'preparing' && 'Preparing Transaction...'}
-          </h3>
+            <h3 className="text-lg font-bold text-white capitalize">
+              {txState.stage === 'simulating' && 'Simulating Contract Call...'}
+              {txState.stage === 'signing' && 'Awaiting Wallet Signature...'}
+              {txState.stage === 'submitting' && 'Broadcasting to Stellar...'}
+              {txState.stage === 'polling' && 'Confirming on Ledger...'}
+              {txState.stage === 'success' && 'Transaction Confirmed!'}
+              {txState.stage === 'error' && 'Transaction Error'}
+              {txState.stage === 'preparing' && 'Preparing Transaction...'}
+            </h3>
 
-          <p className="text-xs text-slate-400 leading-relaxed max-w-xs mx-auto mt-2">
-            {txState.error || txState.message}
-          </p>
+            <p className="text-xs text-slate-400 leading-relaxed max-w-xs mx-auto">
+              {txState.error || txState.message}
+            </p>
+
+            {txState.txHash && (
+              <a
+                href={getStellarExplorerUrl(txState.txHash, 'tx')}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-indigo-400 hover:text-indigo-300 underline block pt-1"
+              >
+                View on Stellar.Expert (<CryptoId value={txState.txHash} head={8} tail={0} />) ↗
+              </a>
+            )}
+
+            {(txState.stage === 'success' || txState.stage === 'error') && (
+              <Button
+                onClick={() => setTxState((prev) => ({ ...prev, isOpen: false }))}
+                className="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs py-2"
+              >
+                Close
+              </Button>
+            )}
+
+            {txState.stage === 'polling' && txState.txHash && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // In a real implementation, we'd retrieve the innerTxXdr from storage
+                  // For now, we'll use a placeholder that would be replaced with actual XDR
+                  const stalledTx = {
+                    id: `speedup-${txState.txHash}`,
+                    innerTxXdr: txState.txHash || '', // Placeholder - actual implementation would store XDR
+                    description: 'Pending Transaction',
+                    submittedAt: new Date(Date.now() - 20000).toISOString(),
+                    projectId: projectId,
+                  };
+                  setStalledTransaction(stalledTx);
+                }}
+                className="mt-2 w-full border-rose-500/30 text-rose-400 hover:bg-rose-500/10 rounded-xl text-xs py-2"
+              >
+                ⚡ Speed Up Transaction
+              </Button>
+            )}
+          </div>
         </div>
-
-        {txState.txHash && (
-          <a
-            href={getStellarExplorerUrl(txState.txHash, 'tx')}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-indigo-400 hover:text-indigo-300 underline block pt-1"
-          >
-            View on Stellar.Expert (<CryptoId value={txState.txHash} head={8} tail={0} />) ↗
-          </a>
-        )}
-
-        {(txState.stage === 'success' || txState.stage === 'error') && (
-          <Button
-            onClick={() => setTxState((prev) => ({ ...prev, isOpen: false }))}
-            className="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs py-2"
-          >
-            Close
-          </Button>
-        )}
-      </AccessibleModal>
+      )}
 
       {lightboxImage && (
         <ImageLightboxModal
@@ -1616,6 +1932,44 @@ export default function ProjectDetailsPage() {
         project={project}
         onUpdated={fetchProject}
       />
-    </main>
+
+      <SorobanResourceInspectorModal
+        transaction={resourceInspectorTx}
+        onClose={() => setResourceInspectorTx(null)}
+      />
+
+      <TransactionSpeedUpModal
+        stalledTx={stalledTransaction}
+        onClose={() => setStalledTransaction(null)}
+        onSuccess={(newTxHash) => {
+          setStalledTransaction(null);
+          setTxState((prev) => ({ ...prev, stage: 'success', txHash: newTxHash }));
+        }}
+      />
+
+      {/* Project Review Modal (#312) */}
+      <ProjectReviewModal
+        isOpen={showReviewModal}
+        onClose={() => { setShowReviewModal(false); setReviewContext(null); }}
+        projectId={projectId}
+        projectTitle={project?.title || ''}
+        revieweeAddress={reviewContext?.revieweeAddress || ''}
+        revieweeRole={reviewContext?.revieweeRole || 'freelancer'}
+        reviewerRole={reviewContext?.reviewerRole || 'client'}
+        onSubmit={async (review) => {
+          // In a real implementation, this would call the API
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+          await fetch(`${apiUrl}/api/projects/${projectId}/reviews`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(review),
+          });
+          setShowReviewModal(false);
+          setReviewContext(null);
+          toast.success('Review submitted successfully!');
+          void fetchProject();
+        }}
+      />
+    </div>
   );
 }

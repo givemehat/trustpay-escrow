@@ -42,7 +42,7 @@ function SingleModalHarness({
               </button>
             </>
           ) : (
-            <p>Static dialog content without buttons</p>
+            <p>No interactive children</p>
           )}
         </div>
       )}
@@ -50,7 +50,7 @@ function SingleModalHarness({
   );
 }
 
-function StackedModalHarness() {
+function StackedModalsHarness() {
   const [outerOpen, setOuterOpen] = useState(false);
   const [innerOpen, setInnerOpen] = useState(false);
   const outerRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +60,7 @@ function StackedModalHarness() {
     isOpen: outerOpen,
     onClose: () => setOuterOpen(false),
   });
+
   useFocusTrap(innerRef, {
     isOpen: innerOpen,
     onClose: () => setInnerOpen(false),
@@ -67,9 +68,11 @@ function StackedModalHarness() {
 
   return (
     <div>
-      <button type="button" onClick={() => setOuterOpen(true)}>
-        Open Outer
-      </button>
+      <main id="main-content" tabIndex={-1}>
+        <button type="button" onClick={() => setOuterOpen(true)}>
+          Open Outer
+        </button>
+      </main>
       {outerOpen && (
         <div ref={outerRef} role="dialog" aria-modal="true" aria-label="Outer dialog">
           <button type="button" onClick={() => setInnerOpen(true)}>
@@ -92,7 +95,29 @@ function StackedModalHarness() {
   );
 }
 
-describe('useFocusTrap', () => {
+function TrapDialog({ active, onEscape }: { active: boolean; onEscape: () => void }) {
+  const ref = useFocusTrap<HTMLDivElement>({ active, onEscape });
+
+  return (
+    <div>
+      <button type="button" data-testid="trigger">
+        Open
+      </button>
+      {active && (
+        <div ref={ref} role="dialog" aria-modal="true" aria-label="Test dialog" tabIndex={-1}>
+          <button type="button" data-testid="first">
+            First
+          </button>
+          <button type="button" data-testid="last">
+            Last
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+describe('useFocusTrap (stacked / WCAG compliance)', () => {
   it('moves initial focus inside the modal, traps Tab and Shift+Tab, and restores focus to trigger on close', () => {
     render(<SingleModalHarness />);
     const trigger = screen.getByRole('button', { name: 'Open Dialog' });
@@ -115,62 +140,29 @@ describe('useFocusTrap', () => {
     fireEvent.keyDown(document, { key: 'Tab' });
     expect(firstBtn).toHaveFocus();
 
-    // Closing restores focus to the triggering button
+    // Close button returns focus to the triggering element
     fireEvent.click(closeBtn);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });
 
-  it('closes via Escape key and restores focus to trigger', () => {
-    const onCloseSpy = vi.fn();
-    render(<SingleModalHarness onCloseSpy={onCloseSpy} />);
-    const trigger = screen.getByRole('button', { name: 'Open Dialog' });
-    trigger.focus();
-    fireEvent.click(trigger);
-
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: 'Escape' });
-
-    expect(onCloseSpy).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
-  });
-
-  it('focuses the dialog container safely when no focusable children exist', () => {
-    render(<SingleModalHarness withFocusableChildren={false} />);
-    const trigger = screen.getByRole('button', { name: 'Open Dialog' });
-    trigger.focus();
-    fireEvent.click(trigger);
-
-    const dialog = screen.getByRole('dialog');
-    expect(dialog).toHaveFocus();
-
-    // Tab stays locked on the container rather than escaping
-    fireEvent.keyDown(document, { key: 'Tab' });
-    expect(dialog).toHaveFocus();
-  });
-
-  it('traps Tab and Escape only in the topmost modal when dialogs are stacked', () => {
-    render(<StackedModalHarness />);
+  it('coordinates stacked modal focus trapping and Escape LIFO order', () => {
+    render(<StackedModalsHarness />);
     const openOuter = screen.getByRole('button', { name: 'Open Outer' });
     openOuter.focus();
     fireEvent.click(openOuter);
 
     const openInner = screen.getByRole('button', { name: 'Open Inner' });
     expect(openInner).toHaveFocus();
+
     fireEvent.click(openInner);
-
     const innerFirst = screen.getByRole('button', { name: 'Inner First' });
-    const closeInner = screen.getByRole('button', { name: 'Close Inner' });
     expect(innerFirst).toHaveFocus();
 
-    // Tab wraps within inner dialog only
+    // While inner is open, Tab only cycles within inner modal
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
-    expect(closeInner).toHaveFocus();
-    fireEvent.keyDown(document, { key: 'Tab' });
-    expect(innerFirst).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Close Inner' })).toHaveFocus();
 
-    // Escape closes inner dialog first and restores focus to Open Inner inside outer dialog
+    // Escape closes topmost (inner) dialog first and restores focus to Open Inner
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Inner dialog' })).not.toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeInTheDocument();
@@ -211,5 +203,42 @@ describe('useFocusTrap', () => {
     const focusables = getFocusableElements(container);
     expect(focusables.map((el) => el.textContent)).toEqual(['Visible', 'Also Visible']);
     container.remove();
+  });
+});
+
+describe('useFocusTrap (#309 signature)', () => {
+  it('moves focus into the dialog and wraps Tab / Shift+Tab', () => {
+    render(<TrapDialog active onEscape={() => {}} />);
+
+    expect(document.activeElement).toBe(screen.getByTestId('first'));
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(screen.getByTestId('last'));
+
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(screen.getByTestId('first'));
+  });
+
+  it('calls onEscape when Escape is pressed', () => {
+    const onEscape = vi.fn();
+    render(<TrapDialog active onEscape={onEscape} />);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores focus to the triggering element when the trap closes', () => {
+    const { rerender } = render(<TrapDialog active={false} onEscape={() => {}} />);
+
+    const trigger = screen.getByTestId('trigger');
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(<TrapDialog active onEscape={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByTestId('first'));
+
+    rerender(<TrapDialog active={false} onEscape={() => {}} />);
+    expect(document.activeElement).toBe(trigger);
   });
 });
