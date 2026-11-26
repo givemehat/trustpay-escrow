@@ -23,6 +23,7 @@ import { useTokenBalance, useTokenBalances, getBalanceShortfall } from '@/hooks/
 import { TokenSelector } from '@/components/TokenSelector';
 import { CurrencyAmountInput } from '@/components/CurrencyAmountInput';
 import { usePersistentTab } from '@/hooks/usePersistentTab';
+import { CurrencyInput } from '@/components/CurrencyInput';
 import { BalanceWarningBadge } from '@/components/BalanceWarningBadge';
 import { LiquidityDepthOptimizer } from '@/components/LiquidityDepthOptimizer';
 import { TokenPriceAlertWidget } from '@/components/TokenPriceAlertWidget';
@@ -1440,14 +1441,12 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                   <label className="block text-xs sm:text-sm font-semibold text-[#e4e4e7]">
                     Total budget ({formToken})
                   </label>
-                  <CurrencyAmountInput
-                    token={formToken}
+                  <CurrencyInput
                     value={formBudget}
-                    onChange={(raw) =>
-                      setFormBudget(raw === '' ? '' : Number(raw))
-                    }
+                    onChange={setFormBudget}
+                    token={formToken}
                     placeholder="900"
-                    label={`Total budget in ${formToken}`}
+                    data-testid="project-budget-input"
                   />
                 </div>
 
@@ -2047,16 +2046,12 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
                   <label className="block text-xs font-semibold text-[#e4e4e7]">
                     Amount ({formToken}) <span className="text-red-400">*</span>
                   </label>
-                  <CurrencyAmountInput
-                    token={formToken}
-                    min={0}
-                    step="any"
+                  <CurrencyInput
                     value={newMilestoneAmount}
-                    onValueChange={setNewMilestoneAmount}
+                    onChange={setNewMilestoneAmount}
+                    token={formToken}
                     placeholder="300"
-                    data-testid="client-milestone-amount-input"
-                    badgeTestId="client-milestone-amount-prefix"
-                    inputClassName="w-full py-2.5 pr-3.5 bg-[#232326] border border-[#333338] rounded-xl text-white text-sm placeholder-[#71717a] focus:outline-none focus:border-blue-500"
+                    data-testid="milestone-amount-input"
                   />
                 </div>
 
