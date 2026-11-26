@@ -1,21 +1,27 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useWalletStore } from '@/store/walletStore';
+import { formatAttachmentLine, hasSubtleCrypto, sha256Hex, truncateHash } from '@/lib/checksum';
 import { authFetch } from '@/lib/api';
+import { AccessibleModal } from '@/components/a11y/AccessibleModal';
+import { announcePolite } from '@/components/a11y/LiveAnnouncer';
 import { submitMilestoneOnChain, type TxStage } from '@/lib/soroban';
 import {
   deliverableSubmissionSchema,
+  MAX_DELIVERABLE_FILES,
   parseGitHubPullRequestUrl,
+  isGitHubPullRequestUrl,
   verifyGitHubPullRequest,
   type GitHubPrVerification,
 } from '@/lib/validators';
 import type { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from './ImageLightboxModal';
 import { MarkdownDeliverableEditor } from './MarkdownDeliverableEditor';
+import { DeliverableDiffViewer } from './DeliverableDiffViewer';
+import { DeliverableFolderTree } from './DeliverableFolderTree';
 
-const MAX_FILES = 20;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 interface AttachedFile {
@@ -24,8 +30,10 @@ interface AttachedFile {
   size: number;
   type: string;
   progress: number;
-  previewUrl?: string;
+  objectUrl?: string;
   bytes?: ArrayBuffer;
+  /** SHA-256 of the file, computed in the browser before upload (#254). */
+  sha256?: string;
   error?: string;
 }
 
@@ -52,8 +60,9 @@ function toHex(buffer: ArrayBuffer): string {
 export async function buildDeliverableHash(notes: string, githubPrUrls: string[], files: AttachedFile[]): Promise<string> {
   const fileDigests = await Promise.all(
     files.map(async (file) => {
-      if (!file.bytes || typeof window === 'undefined' || !window.crypto?.subtle) return 'unavailable';
-      return toHex(await window.crypto.subtle.digest('SHA-256', file.bytes));
+      if (file.sha256) return file.sha256;
+      if (!file.bytes || !hasSubtleCrypto()) return 'unavailable';
+      return sha256Hex(file.bytes);
     })
   );
   const payload = JSON.stringify({
@@ -89,23 +98,25 @@ export function MilestoneSubmitModal({
   const [isDragging, setIsDragging] = useState(false);
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
   const [txStatus, setTxStatus] = useState<{ stage: TxStage | 'validating'; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const objectUrlsRef = useRef<string[]>([]);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const objectUrlsRef = useRef(new Set<string>());
+  const nextFileId = useRef(0);
+  const titleId = useId();
 
   useEffect(() => () => {
     objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !submitting) onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose, submitting]);
-
+    if (txStatus?.message) {
+      announcePolite(
+        `${txStatus.stage === 'error' ? 'Submission failed' : 'Milestone submission'} ${txStatus.stage}: ${txStatus.message}`
+      );
+    }
+  }, [txStatus]);
   if (!isOpen) return null;
 
   const addFiles = (incoming: FileList | File[]) => {
@@ -113,27 +124,27 @@ export function MilestoneSubmitModal({
     const rejected = Array.from(incoming).length - candidates.length;
     if (rejected > 0) toast.error(`${rejected} file(s) exceeded the 25 MB limit.`);
 
-    const slots = MAX_FILES - files.length;
+    const slots = MAX_DELIVERABLE_FILES - files.length;
     if (slots <= 0) {
-      toast.error(`You can attach at most ${MAX_FILES} files.`);
+      toast.error(`You can attach at most ${MAX_DELIVERABLE_FILES} files.`);
       return;
     }
     const accepted = candidates.slice(0, slots);
     if (candidates.length > slots) toast.error(`Only the first ${slots} file(s) were attached.`);
 
-    const entries: AttachedFile[] = accepted.map((file, index) => {
-      let previewUrl: string | undefined;
-      if (file.type.startsWith('image/') && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-        previewUrl = URL.createObjectURL(file);
-        objectUrlsRef.current.push(previewUrl);
+    const entries: AttachedFile[] = accepted.map((file) => {
+      let objectUrl: string | undefined;
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        objectUrl = URL.createObjectURL(file);
+        objectUrlsRef.current.add(objectUrl);
       }
       return {
-        id: `${Date.now()}-${index}-${file.name}`,
-        name: file.name,
+        id: `attachment-${++nextFileId.current}`,
+        name: file.webkitRelativePath || file.name,
         size: file.size,
         type: file.type,
         progress: 0,
-        previewUrl,
+        objectUrl,
       };
     });
     setFiles((previous) => [...previous, ...entries]);
@@ -147,9 +158,16 @@ export function MilestoneSubmitModal({
         }
       };
       reader.onload = () => {
+        const bytes = reader.result as ArrayBuffer;
         setFiles((previous) => previous.map((item) => item.id === entry.id
-          ? { ...item, progress: 100, bytes: reader.result as ArrayBuffer }
+          ? { ...item, progress: 100, bytes }
           : item));
+        // Hash client-side so the checksum is recorded with the submission (#254).
+        if (hasSubtleCrypto()) {
+          sha256Hex(bytes)
+            .then((sha256) => setFiles((previous) => previous.map((item) => item.id === entry.id ? { ...item, sha256 } : item)))
+            .catch(() => undefined);
+        }
       };
       reader.onerror = () => {
         setFiles((previous) => previous.map((item) => item.id === entry.id
@@ -161,11 +179,12 @@ export function MilestoneSubmitModal({
   };
 
   const removeFile = (id: string) => {
-    setFiles((previous) => {
-      const target = previous.find((item) => item.id === id);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
-      return previous.filter((item) => item.id !== id);
-    });
+    const target = files.find((file) => file.id === id);
+    if (target?.objectUrl) {
+      URL.revokeObjectURL(target.objectUrl);
+      objectUrlsRef.current.delete(target.objectUrl);
+    }
+    setFiles((previous) => previous.filter((file) => file.id !== id));
   };
 
   const runVerification = async (url: string) => {
@@ -241,12 +260,15 @@ export function MilestoneSubmitModal({
         projectIdOnChain: project.project_id_onchain ?? project.id ?? 1,
         milestoneIndex: milestone.milestone_index,
         deliverableHash,
-        onStatusUpdate: (stage, message) => setTxStatus({ stage, message }),
+        onStatusUpdate: (stage, message) => {
+          setTxStatus({ stage, message });
+          announcePolite(message);
+        },
       });
 
       const attachments = [
         ...prLinks.map((url) => `- Pull Request: ${url}`),
-        ...files.map((file) => `- Attachment: ${file.name} (${formatBytes(file.size)})`),
+        ...files.map((file) => formatAttachmentLine(file.name, formatBytes(file.size), file.sha256)),
       ];
       const deliverableNotes = `${notes.trim()}\n\n### Links & Attachments\n${attachments.length > 0 ? attachments.join('\n') : '_None provided_'}`;
 
@@ -267,11 +289,14 @@ export function MilestoneSubmitModal({
         throw new Error(payload.error || 'Could not save the deliverable metadata.');
       }
 
+      announcePolite('Deliverable submitted on-chain. Client review timelock started.');
       toast.success('Deliverable submitted on-chain. Client review timelock started.');
       onSubmitted?.({ txHash: result.txHash, deliverableHash });
       setNotes('');
       setPrLinks([]);
       setVerifications({});
+      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      objectUrlsRef.current.clear();
       setFiles([]);
       setTxStatus(null);
       onClose();
@@ -285,25 +310,31 @@ export function MilestoneSubmitModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="bg-[#18181b] border border-[#27272a] rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto custom-scrollbar shadow-2xl">
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[#27272a] bg-[#18181b]/95 px-5 py-4">
-          <div>
-            <h2 className="text-lg sm:text-xl font-bold text-white">Submit Milestone Deliverable</h2>
-            <p className="text-[11px] sm:text-xs text-[#a1a1aa] mt-0.5">
-              {milestone.title} &middot; {project.title} &middot; {milestone.amount} {project.token || 'USDC'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            aria-label="Close submission modal"
-            className="text-[#a1a1aa] hover:text-white text-lg disabled:opacity-40"
-          >
-            ✕
-          </button>
+    <AccessibleModal
+      isOpen={isOpen}
+      onClose={submitting ? undefined : onClose}
+      closeOnBackdropClick={false}
+      ariaLabelledBy={titleId}
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-md animate-fadeIn"
+      dialogClassName="bg-[#18181b] border border-[#27272a] rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto custom-scrollbar shadow-2xl"
+    >
+      <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[#27272a] bg-[#18181b]/95 px-5 py-4">
+        <div>
+          <h2 id={titleId} className="text-lg sm:text-xl font-bold text-white">Submit Milestone Deliverable</h2>
+          <p className="text-[11px] sm:text-xs text-[#a1a1aa] mt-0.5">
+            {milestone.title} &middot; {project.title} &middot; {milestone.amount} {project.token || 'USDC'}
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={submitting}
+          aria-label="Close submission modal"
+          className="text-[#a1a1aa] hover:text-white text-lg disabled:opacity-40"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 p-5">
           <section className="space-y-2">
@@ -311,6 +342,11 @@ export function MilestoneSubmitModal({
               Work Summary <span className="text-red-400">*</span>
             </label>
             <MarkdownDeliverableEditor value={notes} onChange={setNotes} />
+            {notes.trim().length > 0 && notes.trim().length < 20 && (
+              <p className="text-xs text-red-400 mt-1" data-testid="notes-validation-error">
+                Work summary must be at least 20 characters ({notes.trim().length}/20)
+              </p>
+            )}
           </section>
 
           <section className="space-y-2">
@@ -342,6 +378,11 @@ export function MilestoneSubmitModal({
                 Add & Verify
               </button>
             </div>
+            {prInput.trim().length > 0 && !isGitHubPullRequestUrl(prInput) && (
+              <p className="text-xs text-red-400 mt-1" data-testid="pr-url-error">
+                Enter a valid GitHub pull request URL (https://github.com/owner/repo/pull/123)
+              </p>
+            )}
 
             {prLinks.length > 0 && (
               <ul className="space-y-2 pt-1" data-testid="pr-link-list">
@@ -422,6 +463,7 @@ export function MilestoneSubmitModal({
               </button>
               <input
                 ref={fileInputRef}
+                aria-label="Attach deliverable files"
                 data-testid="deliverable-file-input"
                 type="file"
                 multiple
@@ -431,71 +473,92 @@ export function MilestoneSubmitModal({
                   event.target.value = '';
                 }}
               />
-              <p className="mt-2 text-[10px] text-[#71717a]">Up to {MAX_FILES} files, 25 MB each</p>
+              <button
+                type="button"
+                onClick={() => folderInputRef.current?.click()}
+                className="ml-2 mt-2 px-4 py-1.5 text-xs font-bold rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-white border border-[#3f3f46]"
+              >
+                Browse Folder
+              </button>
+              <input
+                ref={folderInputRef}
+                aria-label="Browse Folder"
+                type="file"
+                {...{ webkitdirectory: '' }}
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+              <p className="mt-2 text-[10px] text-[#71717a]">Up to {MAX_DELIVERABLE_FILES} files, 25 MB each</p>
             </div>
 
             {files.length > 0 && (
-              <ul className="space-y-2" data-testid="attachment-list">
-                {files.map((file) => (
-                  <li key={file.id} className="flex items-center gap-3 bg-[#1c1c20] border border-[#27272a] rounded-xl p-2.5">
-                    {file.previewUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => setLightbox({ url: file.previewUrl!, name: file.name })}
-                        className="shrink-0"
-                        title={`Preview ${file.name}`}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={file.previewUrl} alt={file.name} className="w-12 h-12 object-cover rounded-lg border border-[#333338]" />
-                      </button>
-                    ) : (
-                      <span className="w-12 h-12 rounded-lg bg-[#27272a] flex items-center justify-center text-lg shrink-0">📄</span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-[#e4e4e7] truncate">{file.name}</span>
-                        <span className="text-[10px] text-[#71717a] shrink-0">{formatBytes(file.size)}</span>
-                      </div>
-                      <div className="mt-1.5 h-1.5 w-full rounded-full bg-[#27272a] overflow-hidden">
+              <div data-testid="attachment-list">
+                <DeliverableFolderTree
+                  files={files.map((file) => ({ id: file.id, path: file.name, size: file.size, url: file.objectUrl }))}
+                  renderFileDetails={(node) => {
+                    const file = files.find((attachment) => attachment.id === node.id);
+                    if (!file) return null;
+                    return (
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px]">
                         <div
-                          data-testid={`upload-progress-${file.id}`}
-                          className={`h-full rounded-full transition-all ${file.error ? 'bg-red-500' : 'bg-indigo-500'}`}
-                          style={{ width: `${file.progress}%` }}
-                        />
+                          role="progressbar"
+                          aria-label={`Processing ${file.name}`}
+                          aria-valuenow={file.progress}
+                          className="h-1 w-12 overflow-hidden rounded-full bg-[#27272a]"
+                        >
+                          <div
+                            data-testid={`upload-progress-${file.id}`}
+                            className={`h-full ${file.error ? 'bg-red-500' : 'bg-indigo-500'}`}
+                            style={{ width: `${file.progress}%` }}
+                          />
+                        </div>
+                        <span className={file.error ? 'text-red-400' : 'text-slate-400'}>
+                          {file.error || (file.progress === 100 ? 'Ready' : `Processing ${file.progress}%`)}
+                        </span>
+                        {file.sha256 && (
+                          <span className="font-mono text-emerald-400" title={file.sha256} data-testid={`attachment-hash-${file.id}`}>
+                            {truncateHash(file.sha256)}
+                          </span>
+                        )}
+                        {file.type.startsWith('image/') && file.objectUrl && (
+                          <button type="button" onClick={() => setLightbox({ url: file.objectUrl!, name: file.name })}
+                            className="text-blue-300 hover:underline" aria-label={`Preview ${file.name}`}>Preview</button>
+                        )}
+                        <button type="button" onClick={() => removeFile(file.id)}
+                          className="text-slate-400 hover:text-red-400" aria-label={`Remove ${file.name}`}>Remove</button>
                       </div>
-                      <p className={`mt-1 text-[10px] ${file.error ? 'text-red-400' : 'text-[#71717a]'}`}>
-                        {file.error || (file.progress === 100 ? 'Ready' : `Processing ${file.progress}%`)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeFile(file.id)}
-                      aria-label={`Remove ${file.name}`}
-                      className="text-[#71717a] hover:text-red-400 text-xs shrink-0"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                    );
+                  }}
+                />
+              </div>
             )}
           </section>
 
-          {txStatus && (
-            <div
-              data-testid="submission-status"
-              className={`rounded-xl border px-3 py-2 text-xs ${
-                txStatus.stage === 'error'
-                  ? 'bg-[#450a0a]/60 border-[#7f1d1d] text-red-300'
-                  : txStatus.stage === 'success'
-                    ? 'bg-[#052e16]/60 border-[#14532d] text-emerald-300'
-                    : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
-              }`}
-            >
-              <span className="font-bold uppercase tracking-wide mr-2">{txStatus.stage}</span>
-              {txStatus.message}
-            </div>
-          )}
+          <div
+            role={txStatus?.stage === 'error' ? 'alert' : 'status'}
+            aria-live={txStatus?.stage === 'error' ? 'assertive' : 'polite'}
+            aria-atomic="true"
+          >
+            {txStatus && (
+              <div
+                data-testid="submission-status"
+                className={`rounded-xl border px-3 py-2 text-xs ${
+                  txStatus.stage === 'error'
+                    ? 'bg-[#450a0a]/60 border-[#7f1d1d] text-red-300'
+                    : txStatus.stage === 'success'
+                      ? 'bg-[#052e16]/60 border-[#14532d] text-emerald-300'
+                      : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
+                }`}
+              >
+                <span className="font-bold uppercase tracking-wide mr-2">{txStatus.stage}</span>
+                {txStatus.message}
+              </div>
+            )}
+          </div>
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-[#27272a] pt-4">
             <p className="text-[10px] text-[#71717a] max-w-xs leading-relaxed">
@@ -505,7 +568,7 @@ export function MilestoneSubmitModal({
               <button
                 type="button"
                 onClick={onClose}
-                disabled={submitting}
+            disabled={submitting}
                 className="px-4 py-2 text-xs font-semibold rounded-xl text-[#a1a1aa] hover:text-white disabled:opacity-40"
               >
                 Cancel
@@ -513,7 +576,8 @@ export function MilestoneSubmitModal({
               <button
                 type="submit"
                 data-testid="submit-deliverable"
-                disabled={submitting}
+                disabled={submitting || notes.trim().length < 20}
+                aria-busy={submitting || undefined}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50"
               >
                 {submitting ? 'Signing & Submitting…' : 'Submit Deliverable ↗'}
@@ -521,14 +585,13 @@ export function MilestoneSubmitModal({
             </div>
           </div>
         </form>
-      </div>
 
-      <ImageLightboxModal
-        imageUrl={lightbox?.url || null}
-        imageAlt={lightbox?.name}
-        onClose={() => setLightbox(null)}
-      />
-    </div>
+        <ImageLightboxModal
+          imageUrl={lightbox?.url || null}
+          imageAlt={lightbox?.name}
+          onClose={() => setLightbox(null)}
+        />
+      </AccessibleModal>
   );
 }
 
