@@ -1,18 +1,33 @@
 'use client';
 
+import { celebrateEscrow } from '@/lib/confetti';
+import { announcePolite } from '@/components/a11y/LiveAnnouncer';
+import { SorobanResourceInspectorModal } from '@/components/SorobanResourceInspectorModal';
+import { TransactionSpeedUpModal } from '@/components/TransactionSpeedUpModal';
+import { ProjectAuditLog } from '@/components/ProjectAuditLog';
+import { CalendarExportButton } from '@/components/CalendarExportButton';
+import { ContractSecurityModal } from '@/components/ContractSecurityModal';
+import { MutualCancellationModal } from '@/components/MutualCancellationModal';
+
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
 
 import { Milestone, Project } from '@/types';
 import { ImageLightboxModal } from '@/components/ImageLightboxModal';
+import { DisputeEvidenceAttachments } from '@/components/DisputeEvidenceAttachments';
+import { downloadBlob } from '@/lib/share-card';
 import { ProjectDetailSkeleton } from '@/components/skeletons';
-import { ProjectAuditLog } from '@/components/ProjectAuditLog';
-import { CalendarExportButton } from '@/components/CalendarExportButton';
+import { TimelockCountdownBanner } from '@/components/TimelockCountdownBanner';
 import { useWalletStore } from '@/store/walletStore';
 import { authFetch } from '@/lib/api';
 import { CryptoId } from '@/components/ui/CryptoId';
+
+import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { useA11yAnnouncer } from '@/components/A11yLiveAnnouncer';
+import { MilestoneCertificateButton } from '@/components/MilestoneCertificateButton';
 import { SUPPORTED_TOKENS } from '@/config/tokens';
 import {
   createProjectOnChain,
@@ -28,6 +43,17 @@ import {
   DEFAULT_ARBITER_ADDRESS,
   TxStage,
 } from '@/lib/soroban';
+import { useSep07Signer } from '@/hooks/useSep07Signer';
+import { DeliverableDiffViewer } from '@/components/DeliverableDiffViewer';
+import { SorobanEventStreamDrawer } from '@/components/SorobanEventStreamDrawer';
+import { MilestoneGanttChart } from '@/components/MilestoneGanttChart';
+import { DeliverableChecksums } from '@/components/FileChecksumBadge';
+import { GitRepoMilestoneConnector, GitDeliverableBadge } from '@/components/GitRepoMilestoneConnector';
+import {
+  RequestRevisionModal,
+  type RevisionRequestPayload,
+} from '@/components/RequestRevisionModal';
+import { ProjectReviewModal } from '@/components/ProjectReviewModal';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
@@ -35,6 +61,7 @@ export default function ProjectDetailsPage() {
   const projectId = params.id as string;
 
   const { address, activeRole } = useWalletStore();
+  const { announce } = useA11yAnnouncer();
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +87,6 @@ export default function ProjectDetailsPage() {
   const [deliverableNotes, setDeliverableNotes] = useState('');
 
   const [activeRevisionModal, setActiveRevisionModal] = useState<Milestone | null>(null);
-  const [revisionNote, setRevisionNote] = useState('');
 
   const [activeApproveModal, setActiveApproveModal] = useState<Milestone | null>(null);
   const [activeDisputeModal, setActiveDisputeModal] = useState(false);
@@ -70,8 +96,100 @@ export default function ProjectDetailsPage() {
   const [resolveClientAmount, setResolveClientAmount] = useState<number | ''>('');
   const [resolveFreelancerAmount, setResolveFreelancerAmount] = useState<number | ''>('');
 
+  // Drag-and-drop reorder state for milestone cards (#314)
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduceMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduceMotion(e.matches);
+    mq.addEventListener?.('change', handler);
+    return () => mq.removeEventListener?.('change', handler);
+  }, []);
+
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewContext, setReviewContext] = useState<{
+    revieweeAddress: string;
+    revieweeRole: 'client' | 'freelancer';
+    reviewerRole: 'client' | 'freelancer';
+  } | null>(null);
+
+  const [stalledTransaction, setStalledTransaction] = useState<{
+    id: string;
+    innerTxXdr: string;
+    description: string;
+    submittedAt: string;
+    projectId?: string;
+  } | null>(null);
+
   const [showFundEscrowModal, setShowFundEscrowModal] = useState(false);
   const [fundFreelancerAddress, setFundFreelancerAddress] = useState('');
+  const [showDeliverableDiff, setShowDeliverableDiff] = useState(false);
+
+  const { signWithSep07, sep07Modal } = useSep07Signer();
+
+  // Announce async blockchain state changes to screen readers (#309)
+  useEffect(() => {
+    if (!txState.isOpen || !txState.message) return;
+    announce(
+      `Escrow transaction ${txState.stage}: ${txState.message}`,
+      txState.stage === 'error' ? 'assertive' : 'polite'
+    );
+  }, [txState.isOpen, txState.stage, txState.message, txState.error, announce]);
+
+  const [showSecurityModal, setShowSecurityModal] = useState(false);
+  const [showMutualCancelModal, setShowMutualCancelModal] = useState(false);
+  const [resourceInspectorTx, setResourceInspectorTx] = useState<{
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  } | null>(null);
+
+  // #305 — pre-flight simulation of the same approve_milestone invocation used
+  // by the real Approve action, but WITHOUT signing or submitting anything.
+  const openResourceInspector = () => {
+    const onChainId = project?.project_id_onchain ?? 1;
+    setResourceInspectorTx({
+      contractAddress: project?.contract_id || DEFAULT_ESCROW_CONTRACT_ID,
+      functionName: 'approve_milestone',
+      args: [
+        nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+        nativeToScVal(0, { type: 'u32' }),
+        xdr.ScVal.scvVoid(), // platform address (same fallback as approveMilestone)
+      ],
+      description: 'Approve & Release Milestone #1',
+    });
+  };
+
+  useEffect(() => {
+    if (!txState.isOpen) return;
+    const statusText = txState.error || txState.message;
+    if (statusText) {
+      announcePolite(statusText);
+    }
+  }, [txState.isOpen, txState.stage, txState.message, txState.error]);
+
+  // Escape mirrors each modal's own Cancel button.
+  useEscapeKey(() => {
+    setActiveDeliverableModal(null);
+    setDeliverableHash('');
+    setDeliverableUrl('');
+    setDeliverableNotes('');
+  }, Boolean(activeDeliverableModal));
+  useEscapeKey(() => setActiveRevisionModal(null), Boolean(activeRevisionModal));
+  useEscapeKey(() => setActiveApproveModal(null), Boolean(activeApproveModal));
+  useEscapeKey(() => setShowFundEscrowModal(false), showFundEscrowModal);
+  useEscapeKey(() => setActiveDisputeModal(false), activeDisputeModal);
+  useEscapeKey(() => setActiveResolveModal(false), activeResolveModal);
+  // The overlay stays on the stack while a transaction runs, so Escape cannot close the modal under it.
+  useEscapeKey(() => {
+    if (txState.stage === 'success' || txState.stage === 'error') {
+      setTxState((prev) => ({ ...prev, isOpen: false }));
+    }
+  }, txState.isOpen);
 
   const computeDeliverableHash = async (input: string): Promise<string> => {
     const trimmed = input.trim();
@@ -121,6 +239,52 @@ export default function ProjectDetailsPage() {
     fetchProject();
   }, [projectId]);
 
+  // Prompt for review when project is completed (#312)
+  useEffect(() => {
+    if (!project || project.status !== 'completed' || !address) return;
+    
+    const isClientUser = Boolean(
+      address && (
+        (project.client_address && address.toUpperCase() === project.client_address.toUpperCase()) ||
+        activeRole === 'client'
+      )
+    );
+    const isFreelancerUser = Boolean(
+      address && (
+        (project.freelancer_address && address.toUpperCase() === project.freelancer_address.toUpperCase()) ||
+        activeRole === 'freelancer'
+      )
+    );
+
+    // Check if user has already reviewed (would need API call in real implementation)
+    // For now, show prompt if user is a participant and project is completed
+    if (isClientUser || isFreelancerUser) {
+      const reviewedKey = `reviewed-${projectId}-${address}`;
+      const hasReviewed = window.localStorage.getItem(reviewedKey);
+      
+      if (!hasReviewed) {
+        // Small delay to let UI settle
+        const timer = setTimeout(() => {
+          if (isClientUser) {
+            setReviewContext({
+              revieweeAddress: project.freelancer_address || '',
+              revieweeRole: 'freelancer',
+              reviewerRole: 'client',
+            });
+          } else if (isFreelancerUser) {
+            setReviewContext({
+              revieweeAddress: project.client_address || '',
+              revieweeRole: 'client',
+              reviewerRole: 'freelancer',
+            });
+          }
+          setShowReviewModal(true);
+        }, 1500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [project, address, activeRole, projectId]);
+
   if (loading) {
     return <ProjectDetailSkeleton />;
   }
@@ -166,6 +330,66 @@ export default function ProjectDetailsPage() {
   );
 
   const hasOnChainEscrow = Boolean(project.project_id_onchain !== undefined && project.project_id_onchain !== null);
+  const editableMilestones = Boolean(project?.status === 'draft' && isClient);
+
+  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
+    setDraggedIndex(index);
+    e.currentTarget.style.opacity = reduceMotion ? '1' : '0.4';
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === index) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverIndex(null);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>, targetIndex: number) => {
+    if (!editableMilestones || draggedIndex === null || draggedIndex === targetIndex) return;
+    e.preventDefault();
+    const fromIndex = draggedIndex;
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+
+    const milestones = [...(project?.milestones || [])].sort((a, b) => a.milestone_index - b.milestone_index);
+    const [removed] = milestones.splice(fromIndex, 1);
+    milestones.splice(targetIndex, 0, removed);
+    const reordered = milestones.map((m, i) => ({ ...m, milestone_index: i }));
+    setProject((prev) => (prev ? { ...prev, milestones: reordered } : prev));
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await Promise.all(
+        reordered.map((m, i) =>
+          authFetch(`${apiUrl}/api/milestones/${m.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ milestone_index: i }),
+          })
+        )
+      );
+      toast.success('Milestone order updated');
+    } catch (err: any) {
+      toast.error(`Failed to persist order: ${err.message || err}`);
+      await fetchProject();
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+    e.currentTarget.style.opacity = '1';
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
   const tokenSymbol = project.token || 'USDC';
 
   // 1. Client Action: Fund Escrow on Soroban
@@ -204,6 +428,7 @@ export default function ProjectDetailsPage() {
         },
       });
 
+      celebrateEscrow();
       const onChainId = res.onChainProjectId ? Number(res.onChainProjectId) : 1;
       setTxState((prev) => ({ ...prev, stage: 'success', txHash: res.txHash, message: `Escrow project #${onChainId} created on Stellar!` }));
 
@@ -298,14 +523,10 @@ export default function ProjectDetailsPage() {
   };
 
   // 2b. Client Action: Request Milestone Revision on-chain
-  const handleRequestRevision = async () => {
+  const handleRequestRevision = async (payload: RevisionRequestPayload) => {
     if (!activeRevisionModal) return;
     if (!address) {
       toast.error('Please connect your client wallet first.');
-      return;
-    }
-    if (!revisionNote.trim()) {
-      toast.error('Please provide specific revision instructions or feedback.');
       return;
     }
 
@@ -340,18 +561,58 @@ export default function ProjectDetailsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          revision_note: revisionNote.trim(),
+          revision_note: payload.formattedNote,
+          revision_checklist: payload.checklist,
+          revision_attachments: payload.attachments.map((attachment) => ({
+            name: attachment.name,
+            size: attachment.size,
+            type: attachment.type,
+            url: attachment.url,
+          })),
           actor_address: address,
         }),
       });
 
       toast.success('Revision requested on-chain! Timelock paused while freelancer works on updates.');
       setActiveRevisionModal(null);
-      setRevisionNote('');
       await fetchProject();
     } catch (err: any) {
       setTxState((prev) => ({ ...prev, stage: 'error', error: err.message || String(err) }));
       toast.error(`Revision request failed: ${err.message || err}`);
+    }
+  };
+
+  // Drag-to-reschedule on draft timelines (#154). Draft dates are local until
+  // the escrow is funded, so the updated project state stays on this page.
+  const handleRescheduleMilestone = (
+    milestone: Milestone,
+    startDate: string,
+    dueDate: string
+  ) => {
+    setProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            milestones: (prev.milestones || []).map((item) =>
+              item.id === milestone.id
+                ? { ...item, start_date: startDate, due_date: dueDate }
+                : item
+            ),
+          }
+        : prev
+    );
+    toast.success(
+      `${milestone.title} moved to ${new Date(startDate).toLocaleDateString()} – ${new Date(dueDate).toLocaleDateString()}`
+    );
+  };
+
+  const celebrateFinalRelease = (released: Milestone) => {
+    const milestones = project?.milestones ?? [];
+    if (
+      milestones.some((milestone) => milestone.id === released.id) &&
+      milestones.every((milestone) => milestone.id === released.id || milestone.status === 'approved')
+    ) {
+      celebrateEscrow();
     }
   };
 
@@ -380,6 +641,7 @@ export default function ProjectDetailsPage() {
           setTxState((prev) => ({ ...prev, stage, message }));
         },
       });
+      celebrateFinalRelease(activeApproveModal);
 
       setTxState((prev) => ({
         ...prev,
@@ -433,6 +695,7 @@ export default function ProjectDetailsPage() {
           setTxState((prev) => ({ ...prev, stage, message }));
         },
       });
+      celebrateFinalRelease(milestone);
 
       setTxState((prev) => ({
         ...prev,
@@ -571,6 +834,64 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  // 5b. Arbiter Action: Resolve Dispute via SEP-0007 mobile wallet QR signing
+  const handleResolveDisputeSep07 = async () => {
+    if (!address) {
+      toast.error('Please connect the arbiter wallet first.');
+      return;
+    }
+
+    const cAmt = Number(resolveClientAmount) || 0;
+    const fAmt = Number(resolveFreelancerAmount) || 0;
+    if (cAmt + fAmt <= 0) {
+      toast.error('Please enter non-zero settlement amounts.');
+      return;
+    }
+
+    const onChainId = project.project_id_onchain ?? 1;
+    const args: xdr.ScVal[] = [
+      nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+      nativeToScVal(BigInt(Math.round(cAmt * 10_000_000)), { type: 'i128' }),
+      nativeToScVal(BigInt(Math.round(fAmt * 10_000_000)), { type: 'i128' }),
+      xdr.ScVal.scvVoid(),
+    ];
+
+    setTxState({
+      isOpen: true,
+      stage: 'signing',
+      message: 'Preparing SEP-0007 QR code for mobile wallet signing…',
+    });
+
+    try {
+      const res = await signWithSep07({
+        callerAddress: address,
+        functionName: 'resolve_dispute',
+        args,
+      });
+
+      setTxState((prev) => ({
+        ...prev,
+        stage: 'success',
+        txHash: res.txHash,
+        message: 'Dispute settlement signed via mobile wallet and broadcast on Stellar!',
+      }));
+
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      await authFetch(`${apiUrl}/api/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' }),
+      });
+
+      toast.success('Dispute resolved via mobile wallet!');
+      setActiveResolveModal(false);
+      await fetchProject();
+    } catch (err: any) {
+      setTxState((prev) => ({ ...prev, isOpen: false }));
+      toast.error(`Mobile signing failed: ${err?.message || err}`);
+    }
+  };
+
   const handleDisputeTimeout = async (split5050: boolean) => {
     if (!address) {
       toast.error('Please connect your wallet first.');
@@ -677,6 +998,35 @@ export default function ProjectDetailsPage() {
             </span>
 
             <CalendarExportButton project={project} />
+
+            <button
+              onClick={() => setShowSecurityModal(true)}
+              className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/80 text-slate-300 border border-slate-700 hover:bg-slate-700/80 hover:text-white transition-all flex items-center gap-1.5"
+              title="Inspect deployed contract WASM hash & security checklist"
+            >
+              <span>🔒</span>
+              <span>Contract Security</span>
+            </button>
+
+            <button
+              onClick={openResourceInspector}
+              className="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/20 hover:text-white transition-all flex items-center gap-1.5"
+              title="Pre-flight Soroban simulation: CPU, memory & rent usage before signing"
+            >
+              <span>🔬</span>
+              <span>Inspect Resources</span>
+            </button>
+
+            {(isClient || isFreelancer) && project.status === 'in_progress' && (
+              <button
+                onClick={() => setShowMutualCancelModal(true)}
+                className="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-all flex items-center gap-1.5"
+                title="Negotiate a mutual refund split without arbitration"
+              >
+                <span>🤝</span>
+                <span>Mutual Cancellation</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -877,19 +1227,71 @@ export default function ProjectDetailsPage() {
             )}
           </div>
 
+          {/* Active Timelock Countdown Banners for Submitted Milestones */}
+          {project.milestones
+            ?.filter((m) => m.status === 'submitted')
+            .map((submittedM) => (
+              <TimelockCountdownBanner
+                key={`timelock-${submittedM.id}`}
+                milestone={submittedM}
+                project={project}
+                onApprove={(m) => setActiveApproveModal(m)}
+                onRequestRevision={(m) => {
+                  setActiveRevisionModal(m);
+                }}
+              />
+            ))}
+
           {!project.milestones || project.milestones.length === 0 ? (
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-10 text-center flex flex-col items-center justify-center">
               <p className="text-slate-300 font-medium">No milestones created for this project.</p>
             </div>
           ) : (
-            <div className="grid gap-4">
+            <div className="grid gap-4 relative">
               {project.milestones
                 .sort((a, b) => a.milestone_index - b.milestone_index)
                 .map((m, idx) => (
-                  <div
-                    key={m.id || idx}
-                    className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6"
-                  >
+                  <React.Fragment key={m.id || idx}>
+                    {/* Drop indicator line above card when dragging over */}
+                    {editableMilestones && dragOverIndex === idx && draggedIndex !== null && draggedIndex !== idx && (
+                      <div
+                        className="absolute left-0 right-0 h-2 -top-1 pointer-events-none"
+                        style={{ zIndex: 50 }}
+                        aria-hidden="true"
+                      >
+                        <div
+                          className="h-full w-full rounded-t-xl"
+                          style={{
+                            background: 'linear-gradient(90deg, transparent, #3b82f6, transparent)',
+                            boxShadow: '0 0 12px 2px #3b82f6, 0 0 24px 4px #3b82f640',
+                            opacity: reduceMotion ? 1 : 0.9,
+                            transform: reduceMotion ? 'none' : 'scaleY(1.5)',
+                            transition: reduceMotion ? 'none' : 'transform 120ms ease-out, opacity 120ms ease-out',
+                          }}
+                        />
+                      </div>
+                    )}
+                    {/* Milestone card with drag-and-drop */}
+                    <div
+                      key={m.id || idx}
+                      draggable={editableMilestones}
+                      onDragStart={(e) => handleDragStart(e, idx)}
+                      onDragOver={(e) => handleDragOver(e, idx)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, idx)}
+                      onDragEnd={handleDragEnd}
+                      className={`bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-slate-700 transition-all shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative ${
+                        editableMilestones && draggedIndex === idx && !reduceMotion
+                          ? 'scale-[1.02] shadow-[0_0_24px_#3b82f680] ring-1 ring-blue-500/40 z-10'
+                          : ''
+                      }`}
+                      style={{
+                        transition: editableMilestones && !reduceMotion
+                          ? 'transform 150ms ease-out, box-shadow 150ms ease-out, border-color 150ms ease-out'
+                          : 'none',
+                        opacity: editableMilestones && draggedIndex !== null && draggedIndex !== idx && !reduceMotion ? 0.6 : 1,
+                      }}
+                    >
                     <div className="space-y-2 flex-1">
                       <div className="flex items-center gap-3 flex-wrap">
                         <span className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs font-bold flex items-center justify-center">
@@ -947,16 +1349,25 @@ export default function ProjectDetailsPage() {
                       )}
 
                       {m.deliverable_url && (
-                        <div className="pl-10 pt-0.5 text-xs text-indigo-400 flex items-center gap-2">
-                          <span className="text-slate-500 font-medium">Deliverable Link:</span>
-                          <a
-                            href={m.deliverable_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
-                          >
-                            {m.deliverable_url}
-                          </a>
+                        <div className="pl-10 pt-1 flex flex-wrap items-center gap-2">
+                          <div className="text-xs text-indigo-400 flex items-center gap-2">
+                            <span className="text-slate-500 font-medium">Deliverable Link:</span>
+                            <a
+                              href={m.deliverable_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-indigo-300 truncate max-w-xs font-mono text-[11px]"
+                            >
+                              {m.deliverable_url}
+                            </a>
+                          </div>
+                          <GitDeliverableBadge url={m.deliverable_url} commitHash={m.deliverable_hash} />
+                        </div>
+                      )}
+
+                      {m.deliverable_notes && (
+                        <div className="pl-10 pt-1">
+                          <DeliverableChecksums notes={m.deliverable_notes} />
                         </div>
                       )}
 
@@ -1053,13 +1464,17 @@ export default function ProjectDetailsPage() {
                         )}
 
                         {m.status === 'approved' && (
-                          <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
-                            <span>✓</span> Released On-Chain
-                          </span>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 flex items-center gap-1.5">
+                              <span>✓</span> Released On-Chain
+                            </span>
+                            <MilestoneCertificateButton project={project} milestone={m} txHash={project.tx_hash} />
+                          </div>
                         )}
                       </div>
                     </div>
                   </div>
+                  </React.Fragment>
                 ))}
             </div>
           )}
@@ -1107,13 +1522,14 @@ export default function ProjectDetailsPage() {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Deliverable URL / Repository PR / IPFS Gateway</label>
-                <input
-                  type="text"
-                  value={deliverableUrl}
-                  onChange={(e) => setDeliverableUrl(e.target.value)}
-                  placeholder="https://github.com/organization/repo/pull/1 or https://ipfs.io/ipfs/..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
+                <GitRepoMilestoneConnector
+                  initialUrl={deliverableUrl}
+                  onConnectorChange={({ url, metadata, isValid }) => {
+                    setDeliverableUrl(url);
+                    if (isValid && metadata) {
+                      setDeliverableHash(metadata.latestCommitHash);
+                    }
+                  }}
                 />
               </div>
 
@@ -1127,6 +1543,28 @@ export default function ProjectDetailsPage() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
                 />
               </div>
+
+              {(activeDeliverableModal.deliverable_notes || deliverableNotes) && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeliverableDiff((v) => !v)}
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 underline font-semibold"
+                  >
+                    {showDeliverableDiff ? 'Hide revision diff' : 'Compare with previous submission'}
+                  </button>
+                  {showDeliverableDiff && (
+                    <div className="mt-2">
+                      <DeliverableDiffViewer
+                        previousText={activeDeliverableModal.deliverable_notes || ''}
+                        currentText={deliverableNotes}
+                        previousLabel="Previous deliverable"
+                        currentLabel="New submission"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
@@ -1137,6 +1575,7 @@ export default function ProjectDetailsPage() {
                   setDeliverableHash('');
                   setDeliverableUrl('');
                   setDeliverableNotes('');
+                  setShowDeliverableDiff(false);
                 }}
                 className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
               >
@@ -1153,58 +1592,16 @@ export default function ProjectDetailsPage() {
         </div>
       )}
 
-      {/* MODAL 1b: Client Request Revision Modal */}
-      {activeRevisionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                Formal Revision Request
-              </span>
-              <h3 className="text-xl font-bold text-white mt-1">{activeRevisionModal.title}</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Invoking <code className="text-amber-300">request_revision</code> on Soroban resets the 7-day auto-release timelock, transitions the status to <code className="text-amber-300">In Revision</code>, and decrements remaining revisions (
-                <strong>
-                  {Math.max(0, (activeRevisionModal.revisions_remaining ?? activeRevisionModal.revision_limit ?? 2) - 1)}
-                </strong>{' '}
-                revisions will remain).
-              </p>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">Revision Feedback & Required Adjustments *</label>
-                <textarea
-                  rows={4}
-                  value={revisionNote}
-                  onChange={(e) => setRevisionNote(e.target.value)}
-                  placeholder="Detail specifically what changes, bug fixes, or missing requirements are needed before approval..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setActiveRevisionModal(null);
-                  setRevisionNote('');
-                }}
-                className="border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleRequestRevision}
-                className="bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold px-5"
-              >
-                Sign & Request Revision 🔄
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* MODAL 1b: Client Request Revision Modal (#153) */}
+      <RequestRevisionModal
+        key={activeRevisionModal?.id || 'closed-revision'}
+        isOpen={Boolean(activeRevisionModal)}
+        milestone={activeRevisionModal}
+        tokenSymbol={tokenSymbol}
+        isSubmitting={txState.isOpen}
+        onClose={() => setActiveRevisionModal(null)}
+        onSubmit={handleRequestRevision}
+      />
 
       {/* MODAL 2: Client Approve Milestone Modal */}
       {activeApproveModal && (
@@ -1345,6 +1742,7 @@ export default function ProjectDetailsPage() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-200 focus:outline-none focus:border-red-500"
                 />
               </div>
+              <DisputeEvidenceAttachments />
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
@@ -1416,10 +1814,21 @@ export default function ProjectDetailsPage() {
               >
                 Execute Ruling on Stellar ↗
               </Button>
+              <Button
+                onClick={handleResolveDisputeSep07}
+                variant="outline"
+                className="border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 rounded-xl text-xs font-bold px-5"
+                title="Sign with a mobile wallet via SEP-0007 QR code — no browser extension needed"
+              >
+                Sign via Mobile QR
+              </Button>
             </div>
           </div>
         </div>
       )}
+
+      {sep07Modal}
+      {project.contract_id && <SorobanEventStreamDrawer contractId={project.contract_id} />}
 
       {/* TRANSACTION PROGRESS OVERLAY MODAL */}
       {txState.isOpen && (
@@ -1472,6 +1881,27 @@ export default function ProjectDetailsPage() {
                 Close
               </Button>
             )}
+
+            {txState.stage === 'polling' && txState.txHash && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // In a real implementation, we'd retrieve the innerTxXdr from storage
+                  // For now, we'll use a placeholder that would be replaced with actual XDR
+                  const stalledTx = {
+                    id: `speedup-${txState.txHash}`,
+                    innerTxXdr: txState.txHash || '', // Placeholder - actual implementation would store XDR
+                    description: 'Pending Transaction',
+                    submittedAt: new Date(Date.now() - 20000).toISOString(),
+                    projectId: projectId,
+                  };
+                  setStalledTransaction(stalledTx);
+                }}
+                className="mt-2 w-full border-rose-500/30 text-rose-400 hover:bg-rose-500/10 rounded-xl text-xs py-2"
+              >
+                ⚡ Speed Up Transaction
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -1481,8 +1911,65 @@ export default function ProjectDetailsPage() {
           imageUrl={lightboxImage.url}
           imageAlt={lightboxImage.name}
           onClose={() => setLightboxImage(null)}
+          onAnnotatedExport={({ blob, filename }) => {
+            downloadBlob(blob, filename);
+            toast.success('Sanitized copy downloaded');
+          }}
         />
       )}
+
+      {/* Contract Transparency & Security Inspector */}
+      <ContractSecurityModal
+        isOpen={showSecurityModal}
+        onClose={() => setShowSecurityModal(false)}
+        contractId={project.contract_id || DEFAULT_ESCROW_CONTRACT_ID}
+      />
+
+      {/* Mutual Cancellation & Refund Split Negotiation */}
+      <MutualCancellationModal
+        isOpen={showMutualCancelModal}
+        onClose={() => setShowMutualCancelModal(false)}
+        project={project}
+        onUpdated={fetchProject}
+      />
+
+      <SorobanResourceInspectorModal
+        transaction={resourceInspectorTx}
+        onClose={() => setResourceInspectorTx(null)}
+      />
+
+      <TransactionSpeedUpModal
+        stalledTx={stalledTransaction}
+        onClose={() => setStalledTransaction(null)}
+        onSuccess={(newTxHash) => {
+          setStalledTransaction(null);
+          setTxState((prev) => ({ ...prev, stage: 'success', txHash: newTxHash }));
+        }}
+      />
+
+      {/* Project Review Modal (#312) */}
+      <ProjectReviewModal
+        isOpen={showReviewModal}
+        onClose={() => { setShowReviewModal(false); setReviewContext(null); }}
+        projectId={projectId}
+        projectTitle={project?.title || ''}
+        revieweeAddress={reviewContext?.revieweeAddress || ''}
+        revieweeRole={reviewContext?.revieweeRole || 'freelancer'}
+        reviewerRole={reviewContext?.reviewerRole || 'client'}
+        onSubmit={async (review) => {
+          // In a real implementation, this would call the API
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+          await fetch(`${apiUrl}/api/projects/${projectId}/reviews`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(review),
+          });
+          setShowReviewModal(false);
+          setReviewContext(null);
+          toast.success('Review submitted successfully!');
+          void fetchProject();
+        }}
+      />
     </div>
   );
 }

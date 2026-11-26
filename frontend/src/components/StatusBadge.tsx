@@ -18,6 +18,7 @@ export interface StatusBadgeProps {
   label?: string;
   className?: string;
   disableAnimation?: boolean;
+  size?: 'sm' | 'md' | 'lg';
 }
 
 export const STATUS_TOOLTIPS: Record<string, string> = {
@@ -49,6 +50,7 @@ export function StatusBadge({
   label,
   className = '',
   disableAnimation = false,
+  size = 'md',
 }: StatusBadgeProps) {
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -165,7 +167,9 @@ export function StatusBadge({
         onFocus={showTooltip}
         onBlur={hideTooltip}
         onClick={handleTouch}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-400/50 ${config.bg} ${config.border} ${config.textColor} ${className}`}
+        className={`inline-flex items-center gap-1.5 ${
+          size === 'sm' ? 'px-2 py-0.5 text-[11px]' : size === 'lg' ? 'px-3 py-1.5 text-sm' : 'px-2.5 py-1 text-xs'
+        } rounded-full font-medium border cursor-pointer select-none focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-amber-400/50 ${config.bg} ${config.border} ${config.textColor} ${className}`}
       >
         {/* 6px Indicator Dot with Amber CSS Pulse Animation */}
         <span
