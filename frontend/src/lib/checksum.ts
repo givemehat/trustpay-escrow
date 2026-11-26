@@ -1,95 +1,55 @@
 /**
- * Client-side SHA-256 checksums for milestone deliverables (#254), using the
- * Web Crypto API so files never leave the browser to be hashed.
+ * Utility functions for computing and verifying SHA-256 cryptographic checksums
+ * of deliverable files and buffers in-browser using Web Crypto API.
  */
 
-export type HashInput = ArrayBuffer | ArrayBufferView | Blob | string;
-
-export function hasSubtleCrypto(): boolean {
-  return typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.subtle?.digest === 'function';
+/**
+ * Computes the lowercase hex-encoded SHA-256 hash of an ArrayBuffer.
+ */
+export async function calculateBufferChecksum(buffer: ArrayBuffer): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function toHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0')).join('');
+/**
+ * Computes the lowercase hex-encoded SHA-256 hash of a File or Blob.
+ */
+export async function calculateFileChecksum(file: Blob): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  return calculateBufferChecksum(arrayBuffer);
 }
 
-function readBlob(blob: Blob): Promise<ArrayBuffer> {
-  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read file'));
-    reader.readAsArrayBuffer(blob);
-  });
+/**
+ * Computes the lowercase hex-encoded SHA-256 hash of a string (UTF-8 encoded).
+ */
+export async function calculateStringChecksum(text: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  return calculateBufferChecksum(data.buffer as ArrayBuffer);
 }
 
-/** Lower-case hex SHA-256 of a buffer, typed array, blob/file or UTF-8 string. */
-export async function sha256Hex(input: HashInput): Promise<string> {
-  if (!hasSubtleCrypto()) {
-    throw new Error('This browser does not support the Web Crypto API (crypto.subtle).');
+/**
+ * Compares a file's calculated SHA-256 checksum against an expected hash.
+ * Case-insensitive comparison.
+ */
+export async function verifyFileChecksum(file: Blob, expectedHash: string): Promise<boolean> {
+  if (!expectedHash || !expectedHash.trim()) {
+    return false;
   }
-  let data: ArrayBuffer;
-  if (typeof input === 'string') {
-    const bytes = new TextEncoder().encode(input);
-    data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  } else if (Object.prototype.toString.call(input) === '[object ArrayBuffer]') {
-    data = input as ArrayBuffer;
-  } else if (ArrayBuffer.isView(input)) {
-    data = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
-  } else {
-    data = await readBlob(input as Blob);
+  const calculated = await calculateFileChecksum(file);
+  return calculated.toLowerCase() === expectedHash.trim().toLowerCase();
+}
+
+/**
+ * Formats a SHA-256 hex string into a readable truncated representation.
+ * Example: sha256: 3a7f...9b2c
+ */
+export function truncateHash(hash: string, leadChars = 4, trailChars = 4): string {
+  if (!hash) return '';
+  const clean = hash.replace(/^sha256:/i, '').trim();
+  if (clean.length <= leadChars + trailChars) {
+    return `sha256: ${clean}`;
   }
-  return toHex(await globalThis.crypto.subtle.digest('SHA-256', data));
-}
-
-export const SHA256_HEX = /^[0-9a-f]{64}$/;
-
-export function isSha256Hex(value: string | undefined | null): value is string {
-  return typeof value === 'string' && SHA256_HEX.test(value.trim().toLowerCase());
-}
-
-/** `sha256: 3a7f...9b2c` */
-export function truncateHash(hash: string, head = 4, tail = 4): string {
-  const h = hash.trim().toLowerCase();
-  return `sha256: ${h.slice(0, head)}...${h.slice(-tail)}`;
-}
-
-export interface IntegrityResult {
-  match: boolean;
-  expected: string;
-  actual: string;
-}
-
-/** Hashes `file` and compares it, case-insensitively, with the hash recorded at upload. */
-export async function verifyFileIntegrity(file: Blob, expectedHash: string): Promise<IntegrityResult> {
-  const actual = await sha256Hex(file);
-  const expected = expectedHash.trim().toLowerCase();
-  return { match: actual === expected, expected, actual };
-}
-
-// ── Recording hashes in milestone metadata ───────────────────────────────────
-
-export interface AttachmentChecksum {
-  name: string;
-  sha256: string;
-}
-
-const ATTACHMENT_LINE = /^- Attachment: (.+?) \([^)]*\) — sha256:([0-9a-fA-F]{64})\s*$/;
-
-/** Formats one attachment line for `deliverable_notes`, carrying its SHA-256. */
-export function formatAttachmentLine(name: string, size: string, sha256: string | undefined): string {
-  return isSha256Hex(sha256)
-    ? `- Attachment: ${name} (${size}) — sha256:${sha256.toLowerCase()}`
-    : `- Attachment: ${name} (${size})`;
-}
-
-/** Reads the per-file checksums back out of a milestone's `deliverable_notes`. */
-export function parseAttachmentChecksums(notes: string | undefined | null): AttachmentChecksum[] {
-  if (!notes) return [];
-  const out: AttachmentChecksum[] = [];
-  for (const line of notes.split(/\r?\n/)) {
-    const match = line.match(ATTACHMENT_LINE);
-    if (match) out.push({ name: match[1], sha256: match[2].toLowerCase() });
-  }
-  return out;
+  return `sha256: ${clean.slice(0, leadChars)}...${clean.slice(-trailChars)}`;
 }
