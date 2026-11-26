@@ -41,6 +41,7 @@ import { AccountsPayableExportModal } from '@/components/AccountsPayableExportMo
 import { GasFeeEstimatorWidget } from '@/components/GasFeeEstimatorWidget';
 import { BlendYieldVisualizer } from '@/components/BlendYieldVisualizer';
 import { CurrencyConverterWidget } from '@/components/CurrencyConverterWidget';
+import { SorobanResourceInspectorModal } from '@/components/SorobanResourceInspectorModal';
 import { BLEND_ALLOCATION_RATIO } from '@/lib/blend-yield';
 import {
   createProjectOnChain,
@@ -53,8 +54,11 @@ import {
   isMultisigAccount,
   cancelUnassignedProjectOnChain,
   raiseDisputeOnChain,
+  buildCreateProjectArgs,
+  SorobanResourceFootprint,
 } from '@/lib/soroban';
 import { triggerCelebrationConfetti } from '@/lib/confetti';
+import { nativeToScVal, xdr, Address } from '@stellar/stellar-sdk';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import {
   MultisigApprovalModal,
@@ -321,6 +325,45 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
     }
   };
 
+  // Soroban Resource Inspector — pre-flight simulation state
+  const [inspectorTransaction, setInspectorTransaction] = useState<{
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  } | null>(null);
+  const [inspectorResolve, setInspectorResolve] = useState<
+    ((fp: SorobanResourceFootprint | null) => void) | null
+  >(null);
+
+  const runPreflightInspection = (tx: {
+    contractAddress: string;
+    functionName: string;
+    args: xdr.ScVal[];
+    description: string;
+  }): Promise<SorobanResourceFootprint | null> => {
+    return new Promise((resolve) => {
+      setInspectorTransaction(tx);
+      setInspectorResolve(() => resolve);
+    });
+  };
+
+  const handleInspectorClose = () => {
+    setInspectorTransaction(null);
+    if (inspectorResolve) {
+      inspectorResolve(null);
+      setInspectorResolve(null);
+    }
+  };
+
+  const handleInspectorProceed = (fp: SorobanResourceFootprint) => {
+    setInspectorTransaction(null);
+    if (inspectorResolve) {
+      inspectorResolve(fp);
+      setInspectorResolve(null);
+    }
+  };
+
   const { isOnline, persistDraft, loadDraft, removeDraft, queueSubmission } = useOfflineSync({
     draftKey: 'client-dashboard-project-draft',
     draftType: 'project',
@@ -545,6 +588,17 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
       (!project.freelancer_id || !project.freelancer_address)
     ) {
       try {
+        const assignArgs: xdr.ScVal[] = [
+          nativeToScVal(BigInt(onChainId), { type: 'u64' }),
+          Address.fromString(freelancerAddr).toScVal(),
+        ];
+        const assignFootprint = await runPreflightInspection({
+          contractAddress: DEFAULT_ESCROW_CONTRACT_ID,
+          functionName: 'assign_freelancer',
+          args: assignArgs,
+          description: `Bind Freelancer to Escrow #${onChainId}`,
+        });
+        if (!assignFootprint) return;
         toast.info(`Binding winning freelancer to on-chain escrow #${onChainId} in Freighter...`);
         await assignFreelancerOnChain({
           clientAddress: address,
@@ -568,6 +622,20 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
       const tokenConfig = SUPPORTED_TOKENS[project.token || 'USDC'] || SUPPORTED_TOKENS.USDC;
 
       try {
+        const lockArgs = buildCreateProjectArgs({
+          clientAddress: address,
+          freelancerAddress: freelancerAddr,
+          tokenAddress: project.token_address || tokenConfig.issuerOrContractAddress,
+          milestoneAmounts,
+          yieldEnabled: Boolean(project.yield_enabled),
+        });
+        const lockFootprint = await runPreflightInspection({
+          contractAddress: DEFAULT_ESCROW_CONTRACT_ID,
+          functionName: 'create_project',
+          args: lockArgs,
+          description: 'Lock Escrow on Award',
+        });
+        if (!lockFootprint) return;
         toast.info('Locking Escrow on Award: Please confirm transaction in Freighter...');
         const chainRes = await lockEscrowOnChain({
           clientAddress: address,
@@ -865,6 +933,23 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
             ? formMilestones.map((m) => Number(m.amount))
             : [Number(formBudget)];
 
+        const createArgs = buildCreateProjectArgs({
+          clientAddress: clientAddr,
+          freelancerAddress: formFreelancerAddress.trim(),
+          tokenAddress: SUPPORTED_TOKENS[formToken]?.issuerOrContractAddress,
+          milestoneAmounts,
+          yieldEnabled: formYieldEnabled,
+        });
+        const createFootprint = await runPreflightInspection({
+          contractAddress: DEFAULT_ESCROW_CONTRACT_ID,
+          functionName: 'create_project',
+          args: createArgs,
+          description: 'Initialize Soroban Escrow',
+        });
+        if (!createFootprint) {
+          setIsSubmitting(false);
+          return;
+        }
         toast.info('Initializing Soroban Escrow: Please confirm signature in Freighter...');
         const chainRes = await createProjectOnChain({
           clientAddress: clientAddr,
@@ -2276,6 +2361,13 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
         isOpen={showApExportModal}
         onClose={() => setShowApExportModal(false)}
         projects={projects}
+      />
+
+      {/* Soroban Resource Inspector — pre-flight simulation before wallet signing */}
+      <SorobanResourceInspectorModal
+        transaction={inspectorTransaction}
+        onClose={handleInspectorClose}
+        onProceed={handleInspectorProceed}
       />
     </div>
   );
