@@ -79,7 +79,36 @@ export interface ClientDashboardProps {
 
 export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProps) {
   const router = useRouter();
-  const { address } = useWalletStore();
+  const { address, pendingMultisig = [], targetNetwork } = useWalletStore();
+  const activeWalletAddress = useActiveWalletAddress() || address;
+  const [isMultisig, setIsMultisig] = useState(false);
+  const [showPendingDrawer, setShowPendingDrawer] = useState(false);
+  const [multisigRequest, setMultisigRequest] = useState<PendingMultisigRequest | null>(null);
+  const [showMultisigModal, setShowMultisigModal] = useState(false);
+  const accountPendingMultisig = (pendingMultisig || []).filter(
+    (r) => r.accountAddress === activeWalletAddress
+  );
+  const { starred, isStarred, toggle: toggleStarred, setNotes: setStarredNotes } =
+    useStarredFreelancers(activeWalletAddress);
+
+  // Detect whether the connected enterprise account requires multiple signers (#multisig)
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeWalletAddress) {
+      setIsMultisig(false);
+      return;
+    }
+    fetchMultisigAccountInfo(activeWalletAddress)
+      .then((info) => {
+        if (!cancelled) setIsMultisig(isMultisigAccount(info));
+      })
+      .catch(() => {
+        if (!cancelled) setIsMultisig(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWalletAddress]);
   const [activeTab, setActiveTab] = usePersistentTab<ClientDashboardTab>({
     key: 'client_active_tab',
     defaultTab,
@@ -1022,16 +1051,6 @@ export function ClientDashboard({ defaultTab = 'projects' }: ClientDashboardProp
               data-testid="saved-contractors-tab"
             >
               Saved Contractors ({starred.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('saved')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === 'saved'
-                  ? 'bg-[#27272a] text-white shadow-sm'
-                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#27272a]/50'
-              }`}
-            >
-              Saved Contractors
             </button>
           </div>
         </div>
